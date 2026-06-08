@@ -18,9 +18,14 @@
 namespace yisync {
 namespace {
 
-constexpr std::size_t kFrameHeaderLen = 20;
-constexpr std::size_t kHeaderLenOffset = 8;
-constexpr std::size_t kBodyLenOffset = 12;
+constexpr std::size_t kFrameHeaderLen = MessageHeader::kHeaderLen;
+constexpr std::size_t kHeaderLenOffset = 6;
+constexpr std::size_t kBodyLenOffset = 8;
+
+std::uint16_t read_le_u16(std::span<const std::byte> bytes, std::size_t offset) {
+  return static_cast<std::uint16_t>(static_cast<std::uint8_t>(bytes[offset])) |
+         (static_cast<std::uint16_t>(static_cast<std::uint8_t>(bytes[offset + 1])) << 8);
+}
 
 std::uint32_t read_le_u32(std::span<const std::byte> bytes, std::size_t offset) {
   return static_cast<std::uint32_t>(static_cast<std::uint8_t>(bytes[offset])) |
@@ -370,7 +375,7 @@ void AsyncFrameConnection::flush_writes() {
 void AsyncFrameConnection::parse_frames() {
   while (fd_ >= 0 && read_buffer_.size() >= kFrameHeaderLen) {
     const auto header = std::span<const std::byte>(read_buffer_.data(), kFrameHeaderLen);
-    const auto header_len = read_le_u32(header, kHeaderLenOffset);
+    const auto header_len = read_le_u16(header, kHeaderLenOffset);
     const auto body_len = read_le_u32(header, kBodyLenOffset);
     if (header_len != kFrameHeaderLen) {
       fail("unsupported frame header length");

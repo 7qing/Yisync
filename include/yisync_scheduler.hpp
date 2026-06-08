@@ -41,6 +41,8 @@ struct LineConfig {
   std::string name;
   TokenBucketConfig limiter;
   std::uint64_t initial_recv_window_bytes = 0;
+  std::uint64_t heartbeat_timeout_ticks = 300;
+  bool initially_connected = true;
 };
 
 struct LineSnapshot {
@@ -49,6 +51,13 @@ struct LineSnapshot {
   std::uint64_t tokens = 0;
   std::uint64_t inflight_bytes = 0;
   std::uint64_t recv_window_bytes = 0;
+  bool connected = true;
+  bool healthy = true;
+  bool stale = false;
+  std::uint64_t missed_heartbeat_ticks = 0;
+  std::uint64_t consecutive_failures = 0;
+  std::uint64_t pending_sends = 0;
+  std::uint64_t last_completed_bytes = 0;
 };
 
 enum class SendKind : std::uint8_t {
@@ -78,6 +87,9 @@ class MultiLineScheduler {
 
   void refill_ticks(std::uint64_t ticks);
   std::optional<SendGrant> try_acquire(const SendRequest& request);
+  void on_line_connected(LineId line_id);
+  void on_line_disconnected(LineId line_id);
+  void on_line_failure(LineId line_id);
   void on_heartbeat(LineId line_id, const Heartbeat& heartbeat);
   void on_nack(LineId line_id);
 
@@ -99,13 +111,21 @@ class MultiLineScheduler {
     TokenBucket bucket;
     std::uint64_t inflight_bytes = 0;
     std::uint64_t recv_window_bytes = 0;
+    std::uint64_t missed_heartbeat_ticks = 0;
+    std::uint64_t consecutive_failures = 0;
+    std::uint64_t last_completed_bytes = 0;
+    bool connected = true;
     bool healthy = true;
+    bool stale = false;
     std::vector<PendingSend> pending;
   };
 
   std::vector<LineState> lines_;
 
   LineState* find_line(LineId line_id);
+  const LineState* find_line(LineId line_id) const;
+  static std::uint64_t score_line(const LineState& line, const SendRequest& request);
+  static void clear_inflight(LineState& line);
 };
 
 }  // namespace yisync

@@ -1,5 +1,7 @@
 #include "yisync_protocol.hpp"
+#include "yisync_receiver.hpp"
 #include "yisync_scheduler.hpp"
+#include "yisync_sync.hpp"
 #include "yisync_transport.hpp"
 
 #include <algorithm>
@@ -75,7 +77,6 @@ yisync::Data make_data(std::uint64_t stream_id,
 yisync::FileChecksum full_crc32c_checksum(const yisync::Bytes& bytes) {
   return yisync::FileChecksum{
       .algo = yisync::ChecksumAlgo::Crc32c,
-      .scope = yisync::ChecksumScope::Full,
       .offset = 0,
       .len = static_cast<std::uint64_t>(bytes.size()),
       .value = yisync::crc32c_bytes(bytes),
@@ -166,7 +167,7 @@ std::vector<TransferLine> make_tcp_lines(const std::vector<yisync::LineId>& line
 }
 
 std::optional<yisync::Nack> apply_next_message(yisync::MessageChannel& channel,
-                                               yisync::SinkStream& sink) {
+                                               yisync::ReceiverStream& sink) {
   auto message = channel.receive();
   if (!message.has_value()) {
     throw std::runtime_error("expected one message on channel");
@@ -178,11 +179,11 @@ std::optional<yisync::Nack> apply_next_message(yisync::MessageChannel& channel,
   if (const auto* data = std::get_if<yisync::Data>(&*message)) {
     return sink.apply(*data);
   }
-  throw std::runtime_error("message is not applicable to SinkStream");
+  throw std::runtime_error("message is not applicable to ReceiverStream");
 }
 
 std::optional<yisync::Nack> apply_next_chunk_message(yisync::MessageChannel& channel,
-                                                     yisync::ChunkedSinkStream& sink) {
+                                                     yisync::ChunkedReceiverStream& sink) {
   auto message = channel.receive();
   if (!message.has_value()) {
     throw std::runtime_error("expected one chunk-mode message on channel");
@@ -197,13 +198,13 @@ std::optional<yisync::Nack> apply_next_chunk_message(yisync::MessageChannel& cha
   if (const auto* commit = std::get_if<yisync::FileCommit>(&*message)) {
     return sink.apply(*commit);
   }
-  throw std::runtime_error("message is not applicable to ChunkedSinkStream");
+  throw std::runtime_error("message is not applicable to ChunkedReceiverStream");
 }
 
 void send_and_apply(std::string_view op,
                     yisync::MessageChannel& source,
                     yisync::MessageChannel& sink_channel,
-                    yisync::SinkStream& sink,
+                    yisync::ReceiverStream& sink,
                     const yisync::Message& message) {
   source.send(message);
   print_result(op, apply_next_message(sink_channel, sink));
@@ -223,7 +224,7 @@ void run_reconnect_demo() {
   const auto file_path = sink_root / yisync::file_name_for_id(1);
 
   {
-    yisync::SinkStream sink(stream_id, sink_root);
+    yisync::ReceiverStream sink(stream_id, sink_root);
     auto [source_transport, sink_transport] = yisync::make_memory_transport_pair();
     yisync::MessageChannel source_channel(std::move(source_transport));
     yisync::MessageChannel sink_channel(std::move(sink_transport));
@@ -233,7 +234,6 @@ void run_reconnect_demo() {
         .seq = 1,
         .file_id = 1,
         .name = "1.file",
-        .create_mode = yisync::CreateMode::MustNotExist,
         .prev_file_id = 0,
         .prev_final_size = 0,
     };
@@ -254,7 +254,7 @@ void run_reconnect_demo() {
   std::cout << "RECONNECT manifest after reconnect: file=1 offset=" << remote_offset << "\n";
 
   {
-    yisync::SinkStream sink(stream_id, sink_root);
+    yisync::ReceiverStream sink(stream_id, sink_root);
     auto [source_transport, sink_transport] = yisync::make_memory_transport_pair();
     yisync::MessageChannel source_channel(std::move(source_transport));
     yisync::MessageChannel sink_channel(std::move(sink_transport));
@@ -328,6 +328,13 @@ void run_scheduler_demo() {
       .bytes = 20 * 1024,
       .split_allowed = false,
   };
+  const yisync::SendRequest fallback_chunk{
+      .stream_id = 91,
+      .file_id = 1,
+      .seq = 4,
+      .bytes = 10 * 1024,
+      .split_allowed = false,
+  };
   const auto first = scheduler.try_acquire(chunk_1);
   std::cout << "SCHED tick0 20KB line=" << (first ? std::to_string(first->line_id) : "blocked") << "\n";
 
@@ -338,6 +345,12 @@ void run_scheduler_demo() {
   const auto third = scheduler.try_acquire(chunk_2);
   std::cout << "SCHED tick1 20KB line=" << (third ? std::to_string(third->line_id) : "blocked") << "\n";
 
+  scheduler.on_line_disconnected(1);
+  const auto after_disconnect = scheduler.try_acquire(fallback_chunk);
+  std::cout << "SCHED line-a disconnected, 10KB line="
+            << (after_disconnect ? std::to_string(after_disconnect->line_id) : "blocked") << "\n";
+
+  scheduler.on_line_connected(1);
   scheduler.on_heartbeat(1, yisync::Heartbeat{
                                  .stream_id = 91,
                                  .next_seq = 3,
@@ -353,7 +366,11 @@ void run_scheduler_demo() {
   for (const auto& snapshot : scheduler.snapshots()) {
     std::cout << "SCHED snapshot line=" << snapshot.id << " tokens=" << snapshot.tokens
               << " inflight=" << snapshot.inflight_bytes
-              << " window=" << snapshot.recv_window_bytes << "\n";
+              << " window=" << snapshot.recv_window_bytes
+              << " connected=" << snapshot.connected
+              << " healthy=" << snapshot.healthy
+              << " stale=" << snapshot.stale
+              << " pending=" << snapshot.pending_sends << "\n";
   }
 }
 
@@ -433,7 +450,7 @@ void run_chunk_transfer_demo(std::string_view label,
     scheduler.on_heartbeat(line.id, *decoded);
   };
 
-  yisync::ChunkedSinkStream sink(stream_id, sink_root);
+  yisync::ChunkedReceiverStream sink(stream_id, sink_root);
   yisync::FileBegin begin{
       .stream_id = stream_id,
       .order_seq = order_seq,
@@ -565,6 +582,126 @@ void run_chunk_transfer_demo(std::string_view label,
   }
 }
 
+void run_chunk_recovery_demo() {
+  namespace fs = std::filesystem;
+
+  constexpr std::uint64_t stream_id = 125;
+  constexpr std::uint64_t order_seq = 1;
+  constexpr std::uint64_t file_id = 1;
+  const auto base = fs::temp_directory_path() / "yisync_chunk_recovery_demo_cpp20";
+  const auto sink_root = base / "sink";
+  fs::remove_all(base);
+  fs::create_directories(sink_root);
+
+  yisync::Bytes source_bytes;
+  source_bytes.reserve(150 * 1024);
+  for (std::size_t i = 0; i < 150 * 1024; ++i) {
+    source_bytes.push_back(static_cast<std::byte>('a' + (i % 26)));
+  }
+
+  const auto chunk_count = yisync::chunk_count_for_size(source_bytes.size());
+  const yisync::FileBegin begin{
+      .stream_id = stream_id,
+      .order_seq = order_seq,
+      .file_id = file_id,
+      .name = yisync::file_name_for_id(file_id),
+      .final_size = static_cast<std::uint64_t>(source_bytes.size()),
+      .chunk_size = yisync::kDefaultChunkSizeBytes,
+      .chunk_count = chunk_count,
+      .file_checksum = full_crc32c_checksum(source_bytes),
+      .prev_file_id = 0,
+      .prev_final_size = 0,
+  };
+
+  {
+    yisync::ChunkedReceiverStream receiver(stream_id, sink_root);
+    print_result("CHUNK-RECOVERY FILE_BEGIN", receiver.apply(begin));
+    for (const auto chunk_index : std::vector<std::uint64_t>{2, 0}) {
+      auto chunk = make_chunk(stream_id, order_seq, file_id, chunk_index, yisync::kDefaultChunkSizeBytes, source_bytes);
+      print_result("CHUNK-RECOVERY partial CHUNK " + std::to_string(chunk_index), receiver.apply(chunk));
+    }
+    const auto missing = receiver.missing_ranges(order_seq, 4);
+    std::cout << "CHUNK-RECOVERY before restart missing_ranges=" << missing.size();
+    if (!missing.empty()) {
+      std::cout << " first=" << missing.front().first_chunk_index
+                << " last=" << missing.front().last_chunk_index;
+    }
+    std::cout << "\n";
+    auto before_checkpoint = yisync::scan_manifest_stream(stream_id, sink_root, 4 * 1024 * 1024);
+    const auto durable_before =
+        before_checkpoint.incomplete_chunks.empty()
+            ? 0
+            : before_checkpoint.incomplete_chunks.front().received_chunks.size();
+    std::cout << "CHUNK-RECOVERY durable before checkpoint=" << durable_before
+              << " pending_checkpoint_bytes=" << receiver.pending_checkpoint_bytes() << "\n";
+    const auto checkpoint_batch = receiver.checkpoint();
+    for (const auto& task : checkpoint_batch.tasks) {
+      yisync::ChunkedReceiverStream::write_checkpoint_task(task);
+    }
+    std::cout << "CHUNK-RECOVERY checkpoint files=" << checkpoint_batch.result.files
+              << " chunks=" << checkpoint_batch.result.chunks
+              << " bytes=" << checkpoint_batch.result.bytes << "\n";
+  }
+
+  const auto manifest = yisync::scan_manifest_stream(stream_id, sink_root, 4 * 1024 * 1024);
+  if (manifest.incomplete_chunks.size() != 1) {
+    throw std::runtime_error("chunk recovery manifest did not include incomplete file");
+  }
+  const auto incomplete_frame = yisync::encode_frame(yisync::Message{yisync::Manifest{.manifest_id = 1, .streams = {manifest}}});
+  const auto incomplete_decoded = yisync::decode_message(
+      yisync::decode_frame(std::span<const std::byte>(incomplete_frame.data(), incomplete_frame.size())));
+  const auto* decoded_manifest = std::get_if<yisync::Manifest>(&incomplete_decoded);
+  const auto decoded_incomplete_count =
+      decoded_manifest == nullptr || decoded_manifest->streams.empty()
+          ? 0
+          : decoded_manifest->streams.front().incomplete_chunks.size();
+  std::cout << "CHUNK-RECOVERY manifest incomplete=" << manifest.incomplete_chunks.size()
+            << " received=" << manifest.incomplete_chunks.front().received_chunks.size()
+            << " decoded_incomplete=" << decoded_incomplete_count << "\n";
+  const auto resume_plan = yisync::plan_chunk_resume_from_manifest(yisync::Manifest{.manifest_id = 2, .streams = {manifest}},
+                                                                   stream_id,
+                                                                   order_seq,
+                                                                   file_id,
+                                                                   static_cast<std::uint64_t>(source_bytes.size()),
+                                                                   yisync::kDefaultChunkSizeBytes,
+                                                                   chunk_count,
+                                                                   full_crc32c_checksum(source_bytes));
+  std::cout << "CHUNK-RECOVERY sender resume_incomplete=" << resume_plan.resume_incomplete
+            << " checkpointed_chunks=" << resume_plan.checkpointed_chunks.size()
+            << " missing_chunks=" << (chunk_count - resume_plan.checkpointed_chunks.size()) << "\n";
+  if (!resume_plan.resume_incomplete || resume_plan.checkpointed_chunks.size() != 2) {
+    throw std::runtime_error("chunk recovery sender resume plan mismatch");
+  }
+
+  {
+    yisync::ChunkedReceiverStream receiver(stream_id, sink_root);
+    std::cout << "CHUNK-RECOVERY restored expected_order_seq=" << receiver.expected_order_seq() << "\n";
+    auto missing_chunk = make_chunk(stream_id, order_seq, file_id, 1, yisync::kDefaultChunkSizeBytes, source_bytes);
+    print_result("CHUNK-RECOVERY restored CHUNK 1", receiver.apply(missing_chunk));
+    const yisync::FileCommit commit{
+        .stream_id = stream_id,
+        .order_seq = order_seq,
+        .file_id = file_id,
+    };
+    print_result("CHUNK-RECOVERY FILE_COMMIT", receiver.apply(commit));
+  }
+
+  const auto final_path = sink_root / yisync::file_name_for_id(file_id);
+  const auto final_text = read_text(final_path);
+  const bool final_match =
+      final_text.size() == source_bytes.size() &&
+      std::equal(final_text.begin(), final_text.end(), source_bytes.begin(), [](char lhs, std::byte rhs) {
+        return static_cast<unsigned char>(lhs) == static_cast<unsigned char>(rhs);
+      });
+  const auto final_manifest = yisync::scan_manifest_stream(stream_id, sink_root, 4 * 1024 * 1024);
+  std::cout << "CHUNK-RECOVERY final match=" << final_match
+            << " final_size=" << final_text.size()
+            << " manifest_incomplete_after_commit=" << final_manifest.incomplete_chunks.size() << "\n";
+  if (!final_match || !final_manifest.incomplete_chunks.empty()) {
+    throw std::runtime_error("chunk recovery demo final state mismatch");
+  }
+}
+
 void run_chunk_demo() {
   run_chunk_transfer_demo("CHUNK-MEM",
                           std::filesystem::temp_directory_path() / "yisync_chunk_demo_cpp20",
@@ -594,14 +731,13 @@ int main() {
   write_text(source / "1.file", "hello");
   write_text(source / "2.file", "world-data");
 
-  yisync::SinkStream sink(7, sink_root);
+  yisync::ReceiverStream sink(7, sink_root);
 
   yisync::Create create_1{
       .stream_id = 7,
       .seq = 1,
       .file_id = 1,
       .name = "1.file",
-      .create_mode = yisync::CreateMode::MustNotExist,
       .prev_file_id = 0,
       .prev_final_size = 0,
   };
@@ -627,7 +763,6 @@ int main() {
       .seq = 3,
       .file_id = 2,
       .name = "2.file",
-      .create_mode = yisync::CreateMode::MustNotExist,
       .prev_file_id = 1,
       .prev_final_size = 5,
       .prev_checksum = prev_checksum,
@@ -704,6 +839,7 @@ int main() {
   run_scheduler_demo();
   run_chunk_demo();
   run_tcp_multiline_chunk_demo();
+  run_chunk_recovery_demo();
 
   std::cout << "demo dir=" << base << "\n";
   return diff.has_value() ? 1 : 0;
