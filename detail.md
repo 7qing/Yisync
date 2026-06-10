@@ -1,1926 +1,1010 @@
 # Yisync 实现细节
 
-本文档给一个从零开始读代码的人使用。它不只记录“做了什么”，还解释这些代码为什么这样拆、消息怎样流动、状态怎样推进、失败怎样恢复。
+本文档讲代码怎么拆、每个模块负责什么、一次同步如何从网络消息走到文件落盘。协议字段的完整定义见 [protocol.md](protocol.md)，构建、运行、配置示例见 [readme.md](readme.md)，未完成事项见 [todo.md](todo.md)。
 
-相关文档：
+## 1. 先记住这些规则
 
-- [README.md](README.md)：怎么构建、怎么运行、当前状态总览。
-- [protocol.md](protocol.md)：线上协议字段和协议规则。
-- [todo.md](todo.md)：后续待办事项。
-- 本文档：代码实现细节和读代码路线。
+当前项目不是完整 rsync，而是一个 append / 新增文件同步原型。核心规则如下：
 
-## 0. 先理解这件事
+- A 端叫 `Sender`，负责扫描源目录和发送文件内容。
+- B 端叫 `Receiver`，负责扫描目标目录、计算缺什么、写目标目录。
+- 启动后不是 B 先报目录，而是 A 先发 `Manifest1`。
+- B 收到 `Manifest1` 后扫描自己的目标目录，返回 `Manifest2`。
+- A 根据 `Manifest2` 决定跳过、append 续传，或者从头创建。
+- Sender 不持久化本地同步进度。
+- Receiver 的最终目录是恢复依据。
+- `.yisync_tmp` 只服务当前进程内乱序 chunk 接收，不做重启恢复。
+- 单个 stream 内只用一个 `seq` 表达严格文件顺序。
+- 同一大文件内 chunk 可以乱序接收。
+- 小文件和 append 使用 `CREATE + DATA`。
+- 大于 64KB 的缺失文件使用 `FILE_BEGIN + CHUNK + FILE_COMMIT`。
+- `HEARTBEAT` 是批量 ACK，同时携带窗口、已收 chunk、缺失 chunk hint。
+- `NACK` 不直接切 Manifest 恢复，Sender 会先去当前进程发送缓冲区找原包重发。
 
-Yisync 当前是一个 C++20 同步原型。它要做的事情是：
+## 2. 代码分层
 
-```text
-A 端 Sender 读源目录
-B 端 Receiver 上报目标目录状态
-Sender 比较两边目录差异
-Sender 把缺失或追加的数据发给 Receiver
-Receiver 写入目标目录
-断线后 Sender 不依赖本地持久化状态，而是重新看 Receiver 的 MANIFEST
-```
-
-当前不是完整产品，重点是把核心链路跑通：
-
-- 小文件同步。
-- 大文件分块同步。
-- 多 TCP line 分发 chunk。
-- 限速和背压。
-- 断线重连和未确认 chunk 重排。
-- Receiver 端 chunk checkpoint 和重启恢复。
-- Receiver 端后台 disk writer，避免 event loop 被 fsync / rename / CRC32C 卡住。
-- 目录、子目录、空目录、软链接同步。
-
-## 1. 最小运行方式
-
-构建：
-
-```bash
-cmake --build build-cpp20
-```
-
-跑单进程综合 demo：
-
-```bash
-./build-cpp20/yisync_demo
-```
-
-跑真实 A/B 进程：
-
-```bash
-./build-cpp20/yisync_node receiver \
-  --host 127.0.0.1 \
-  --base-port 19000 \
-  --lines 2 \
-  --root /tmp/yisync_receiver
-```
-
-另一个终端：
-
-```bash
-./build-cpp20/yisync_node sender \
-  --host 127.0.0.1 \
-  --base-port 19000 \
-  --lines 2 \
-  --source-root /tmp/yisync_source
-```
-
-模拟数据也可以：
-
-```bash
-./build-cpp20/yisync_node sender \
-  --host 127.0.0.1 \
-  --base-port 19000 \
-  --lines 2 \
-  --size 153600
-```
-
-测试断线重连：
-
-```bash
-./build-cpp20/yisync_node sender \
-  --host 127.0.0.1 \
-  --base-port 19000 \
-  --lines 2 \
-  --size 2097152 \
-  --drop-line-once 1
-```
-
-## 2. 核心词汇
-
-### Sender / Receiver
+`include/` 和 `src/` 使用同一套目录结构：
 
 ```text
-Sender   = A 端，源端，读取源目录并发送消息。
-Receiver = B 端，目标端，上报目录状态并写目标目录。
+include/
+  core/
+  network/
+  sender/
+  receiver/
+  node/
+
+src/
+  core/
+  network/
+  sender/
+  receiver/
+  node/
+  demo/
 ```
 
-代码里：
+各层职责：
 
-- Sender 进程在 [src/yisync_sender_app.cpp](src/yisync_sender_app.cpp)。
-- Receiver 进程在 [src/yisync_receiver_app.cpp](src/yisync_receiver_app.cpp)。
-- 入口在 [src/yisync_node.cpp](src/yisync_node.cpp)。
+| 层 | 负责什么 | 不负责什么 |
+| --- | --- | --- |
+| `core/` | wire 消息、frame 编解码、CRC32C、manifest scan/diff、chunk 策略 | TCP、进程入口、具体发送计划 |
+| `network/` | event loop、异步 TCP、line connect/accept、Hello 协商、重连、限速、背压、heartbeat 聚合 | 读源文件、写目标文件、业务 diff |
+| `sender/` | 源目录 reader、watcher、发送计划、chunk resend、发送缓冲 | TCP socket 细节、Receiver 写盘 |
+| `receiver/` | append receiver、chunk receiver、stream map、disk writer、commit poller | 源目录扫描、line 选择 |
+| `node/` | 命令行、配置文件、SenderApp、ReceiverApp glue | 协议字段本身 |
+| `demo/` | 单进程演示 | 生产路径 |
 
-### Stream
+建议读代码顺序：
 
-`stream` 表示一个同步目录。一个 stream 内必须严格保持文件边界顺序：
+1. [include/core/yisync_protocol.hpp](include/core/yisync_protocol.hpp)
+2. [include/core/yisync_sync.hpp](include/core/yisync_sync.hpp)
+3. [include/network/yisync_network.hpp](include/network/yisync_network.hpp)
+4. [include/network/yisync_scheduler.hpp](include/network/yisync_scheduler.hpp)
+5. [include/sender/yisync_sender_plan.hpp](include/sender/yisync_sender_plan.hpp)
+6. [include/sender/yisync_chunk_resend.hpp](include/sender/yisync_chunk_resend.hpp)
+7. [include/sender/yisync_send_buffer.hpp](include/sender/yisync_send_buffer.hpp)
+8. [include/receiver/yisync_receiver.hpp](include/receiver/yisync_receiver.hpp)
+9. [include/receiver/yisync_receiver_coordinator.hpp](include/receiver/yisync_receiver_coordinator.hpp)
+10. [src/sender/yisync_sender_app.cpp](src/sender/yisync_sender_app.cpp)
+11. [src/receiver/yisync_receiver_app.cpp](src/receiver/yisync_receiver_app.cpp)
 
-```text
-entry 1 没完成，entry 2 不能对外可见
-entry 2 没完成，entry 3 不能对外可见
-```
+## 3. Core 层
 
-当前约定：
+### 协议消息
 
-- 默认 stream id 是 `9001`。
-- 如果 `--source-root` 下有数字子目录，例如 `1/`、`2/`，它们会被当成 stream id。
-- 默认 stream 写到 receiver root。
-- 其他 stream 写到 receiver root 下的 `<stream_id>/`。
+入口文件：
 
-例子：
+- [include/core/yisync_protocol.hpp](include/core/yisync_protocol.hpp)
+- [src/core/yisync_protocol.cpp](src/core/yisync_protocol.cpp)
 
-```text
-source-root/
-  a.txt
-  sub/b.txt
-
-=> stream 9001
-=> receiver-root/a.txt
-=> receiver-root/sub/b.txt
-```
-
-```text
-source-root/
-  1/a.txt
-  2/b.txt
-
-=> stream 1 写 receiver-root/1/a.txt
-=> stream 2 写 receiver-root/2/b.txt
-```
-
-### seq 和 order_seq
-
-代码里有两个顺序号，容易混：
-
-```text
-seq       = append 模式用，CREATE / DATA 严格递增。
-order_seq = chunk 模式用，FILE_BEGIN / FILE_COMMIT 的文件级顺序。
-```
-
-小文件和 append 走 `seq`。
-
-大文件 chunk 走 `order_seq`，同一个文件内部的 `CHUNK` 可以乱序，但 `FILE_BEGIN` 和 `FILE_COMMIT` 必须按 `order_seq`。
-
-### MANIFEST
-
-`MANIFEST` 是 Receiver 告诉 Sender：“我现在目录里有什么”。
-
-连接建立后，Receiver 会扫描目标目录并发送 `MANIFEST`。Sender 收到后比较源目录和目标目录，决定：
-
-- 已一致，跳过。
-- Receiver 缺文件，创建。
-- Receiver 文件较短，append 续传。
-- Receiver 有未完成 chunk，跳过已 checkpoint chunk，只发缺失 chunk。
-- Receiver 内容冲突，停止。
-
-### HEARTBEAT 和 NACK
-
-成功路径不逐条 ACK。Receiver 用 `HEARTBEAT` 批量告诉 Sender：
-
-```text
-next_seq           下一个期待的 seq/order_seq
-file_id            当前文件
-offset             当前已接受的 offset
-durable_offset     已 fsync 的 offset
-recv_window_bytes  Receiver 当前窗口
-received_chunks    已收到的 chunk
-missing_ranges     Receiver 观察到的 chunk 缺口
-```
-
-失败路径用 `NACK`。
-
-### checkpoint 和 durable
-
-`received` 不等于 `durable`：
-
-```text
-received = 已经写入 .tmp 或 page cache，适合低延迟流控。
-durable  = 已经通过 fsync / .meta checkpoint，可用于重启恢复。
-```
-
-Receiver chunk 模式维护两个 bitmap：
-
-```text
-received     已收到并写入临时文件。
-checkpointed 已写入 .meta，进程重启后能恢复。
-```
-
-## 3. 代码地图
-
-### 协议层
-
-| 文件 | 作用 |
-| --- | --- |
-| [include/yisync_protocol.hpp](include/yisync_protocol.hpp) | wire 消息结构、枚举、Frame、CRC32C 接口 |
-| [src/yisync_protocol.cpp](src/yisync_protocol.cpp) | frame 编解码、消息 body 编解码、CRC32C |
-
-这层只做线上协议，不应该放 sender/receiver 状态机。
-
-### 同步和 manifest 层
-
-| 文件 | 作用 |
-| --- | --- |
-| [include/yisync_sync.hpp](include/yisync_sync.hpp) | manifest scan、diff、chunk 策略接口 |
-| [src/yisync_sync.cpp](src/yisync_sync.cpp) | 扫描目录、读取 `.meta`、比较 manifest、文件 checksum |
-
-这层负责“本地目录状态”和“比较差异”。
-
-### 源目录层
-
-| 文件 | 作用 |
-| --- | --- |
-| [include/yisync_source.hpp](include/yisync_source.hpp) | `SourceDirectory`、watcher 抽象 |
-| [src/yisync_source.cpp](src/yisync_source.cpp) | 源目录扫描、范围读取、全文件 checksum、polling watcher |
-
-这层负责从源目录读真实文件。
-
-### Receiver 写盘状态机
-
-| 文件 | 作用 |
-| --- | --- |
-| [include/yisync_receiver.hpp](include/yisync_receiver.hpp) | `ReceiverStream`、`ChunkedReceiverStream` 接口 |
-| [src/yisync_receiver.cpp](src/yisync_receiver.cpp) | CREATE/DATA、FILE_BEGIN/CHUNK/FILE_COMMIT 的写盘逻辑 |
-
-这层负责把协议消息应用到本地文件系统。
-
-### Scheduler
-
-| 文件 | 作用 |
-| --- | --- |
-| [include/yisync_scheduler.hpp](include/yisync_scheduler.hpp) | token bucket、多线路调度接口 |
-| [src/yisync_scheduler.cpp](src/yisync_scheduler.cpp) | 限速、窗口、in-flight、线路健康评分 |
-
-这层负责“哪条 TCP line 能发、发多少”。
-
-### 网络层
-
-| 文件 | 作用 |
-| --- | --- |
-| [include/yisync_transport.hpp](include/yisync_transport.hpp) | 阻塞 transport 抽象和 memory/TCP 接口 |
-| [src/yisync_transport.cpp](src/yisync_transport.cpp) | memory transport、阻塞 TCP transport |
-| [include/yisync_async.hpp](include/yisync_async.hpp) | event loop、异步 TCP frame connection |
-| [src/yisync_async.cpp](src/yisync_async.cpp) | `poll` event loop、非阻塞 TCP、frame 拆包组包 |
-
-当前真实 sender/receiver 进程使用异步 TCP。
-
-### Node 应用层
-
-| 文件 | 作用 |
-| --- | --- |
-| [include/yisync_node_common.hpp](include/yisync_node_common.hpp) | node 常量、命令行参数、构造消息工具函数 |
-| [src/yisync_node_common.cpp](src/yisync_node_common.cpp) | 参数解析、chunk 构造、DATA 构造、fsync helper |
-| [include/yisync_node_apps.hpp](include/yisync_node_apps.hpp) | `run_sender()` / `run_receiver()` 声明 |
-| [src/yisync_sender_app.cpp](src/yisync_sender_app.cpp) | Sender 进程主逻辑 |
-| [src/yisync_receiver_app.cpp](src/yisync_receiver_app.cpp) | Receiver 进程主逻辑 |
-| [src/yisync_node.cpp](src/yisync_node.cpp) | main 入口，按 mode 调 sender 或 receiver |
-| [src/main.cpp](src/main.cpp) | 单进程 demo 和验证用例 |
-
-## 4. 协议层怎么工作
-
-### MessageHeader
-
-在 [include/yisync_protocol.hpp](include/yisync_protocol.hpp)：
-
-```text
-MessageHeader:
-  magic       u32
-  version     u8
-  msg_type    u8
-  header_len  u16
-  body_len    u32
-```
-
-固定 12 字节。TCP 是字节流，不保留消息边界，所以每个 frame 必须带 `body_len`，接收端才能知道一条消息什么时候收完整。
-
-### MessageType
-
-当前消息：
+这里定义所有上 wire 的消息：
 
 ```text
 Hello
-Manifest
+Manifest1
+Manifest2
 Create
 Data
-Heartbeat
-Nack
 FileBegin
 Chunk
 FileCommit
+Heartbeat
+Nack
 ```
 
-已经删除：
+`Message` 是一个 `std::variant`。网络层只处理 `Message`，不关心具体业务含义。
 
-- `Ping`
-- `Goaway`
-- `flags`
-- `CreateMode`
-- `ChecksumScope`
+`encode_frame()` 做两件事：
 
-### Message variant
+```text
+Message -> body bytes
+body bytes + MessageHeader -> TCP frame bytes
+```
 
-代码里用：
+`decode_frame()` 反过来：
+
+```text
+TCP bytes -> MessageHeader + body bytes -> Message
+```
+
+当前 decoder 对 trailing bytes 是严格拒绝的，所以协议扩展必须先通过 `Hello` 做 version / capability negotiation。
+
+### Manifest 和 Diff
+
+入口文件：
+
+- [include/core/yisync_sync.hpp](include/core/yisync_sync.hpp)
+- [src/core/yisync_sync.cpp](src/core/yisync_sync.cpp)
+
+核心函数：
+
+| 函数 | 作用 |
+| --- | --- |
+| `scan_manifest_stream()` | 扫描一个目录，生成 `Manifest1Stream` |
+| `diff_stream()` | 比较 Sender manifest 和 Receiver manifest，得到本地 `SyncStart` |
+| `make_manifest2_stream()` | 把本地 `SyncStart` 转成 wire 上的 `Manifest2Stream` |
+| `should_use_chunk_mode()` | 判断文件是否走 chunk，目前阈值是大于 64KB |
+| `chunk_count_for_size()` | 计算大文件 chunk 数 |
+
+`StartAction` 是本地状态，不是协议字段。它只存在于 core/sync 和 sender plan 之间：
+
+```text
+ResumeExisting  -> Sender 用 DATA 从 start_offset 续传
+CreateMissing   -> Sender 从 start_file_id 开始创建
+```
+
+wire protocol 里对应的是 `Manifest2Action`。
+
+### 路径安全
+
+Receiver 写文件前必须保证 manifest 里的 `name` 是安全相对路径：
+
+- 不能是空路径。
+- 不能是绝对路径。
+- 不能包含 `..`。
+- 不能逃出 stream root。
+
+软链接同步的是链接本身，`link_target` 是 `readlink()` 的结果，不会跟随软链接目标。
+
+## 4. Network 层
+
+入口文件：
+
+- [include/network/yisync_async.hpp](include/network/yisync_async.hpp)
+- [src/network/yisync_async.cpp](src/network/yisync_async.cpp)
+- [include/network/yisync_network.hpp](include/network/yisync_network.hpp)
+- [src/network/yisync_network.cpp](src/network/yisync_network.cpp)
+- [include/network/yisync_scheduler.hpp](include/network/yisync_scheduler.hpp)
+- [src/network/yisync_scheduler.cpp](src/network/yisync_scheduler.cpp)
+
+### Event Loop
+
+当前是基于 `poll` 的异步 event loop。它负责：
+
+- socket readable / writable。
+- 定时器，例如 tick、heartbeat、commit poll。
+- TCP connect。
+- TCP listen / accept。
+- frame 级读写。
+
+上层不会直接读写 fd，而是注册回调。
+
+### LineEndpoint
+
+`LineEndpoint` 描述一条线路：
 
 ```cpp
-using Message = std::variant<Hello,
-                             Manifest,
-                             Create,
-                             Data,
-                             FileBegin,
-                             Chunk,
-                             FileCommit,
-                             Heartbeat,
-                             Nack>;
+struct LineEndpoint {
+  LineId id;
+  Protocol protocol;
+  Endpoint endpoint;
+  std::string name;
+};
 ```
 
-发送时：
+当前真实实现只有 `Protocol::Tcp`。`Udp / Quic / Areon` 是接口预留，真实 adapter 在 TODO 里。
+
+### SenderNetwork
+
+`SenderNetwork` 是 SenderApp 看到的网络门面。上层主要调用：
 
 ```text
-Message -> encode_message() -> Frame -> encode_frame() -> Bytes
+send(message, request)
+send_control(message, label)
+on_message(callback)
+on_connected(callback)
+on_lost_sends(callback)
+on_heartbeat(line_id, heartbeat)
+refill_ticks(1)
 ```
 
-接收时：
+`send()` 发送数据面消息，必须走 scheduler。它会检查：
 
 ```text
-Bytes -> decode_frame() -> Frame -> decode_message() -> Message
+line connected
+line negotiated
+line healthy
+line not stale
+token bucket 有足够 token
+in-flight 不超过 recv window
 ```
 
-实现位置：
+`send_control()` 发送控制面消息，例如 `Manifest1`。控制消息进入 network 内部 control queue，由 network 选择健康 line 发送。当前它还不是完整 QoS 队列，后续要和小文件、重传 chunk 合并。
 
-- `encode_message()`
-- `decode_message()`
-- `encode_frame()`
-- `decode_frame()`
+### ReceiverNetwork
 
-都在 [src/yisync_protocol.cpp](src/yisync_protocol.cpp)。
-
-### checksum
-
-`FileChecksum`：
+`ReceiverNetwork` 是 ReceiverApp 看到的网络门面。上层主要调用：
 
 ```text
-algo
-offset
-len
-value
+listen()
+send(line_id, message)
+queue_heartbeat(line_id, heartbeat)
+flush_heartbeats(line_id)
+flush_all_heartbeats()
+on_message(callback)
 ```
 
-范围校验和整文件校验统一表达：
+Receiver 侧 heartbeat 聚合已经放在 network 层。业务层只产出 heartbeat action，network 负责合并和批量 flush。
+
+当前默认逻辑：
 
 ```text
-范围校验: offset = 某个位置, len = 范围长度
-整文件:   offset = 0, len = file_size
+每个 stream/line 有一个 pending heartbeat
+收到 chunk ack 后累积 received_chunks
+达到 heartbeat_ack_batch_size，立即 flush
+定时 heartbeat 到期，flush_all_heartbeats
 ```
 
-当前实际实现的是 CRC32C，使用 Google `crc32c`。
+### Scheduler
 
-## 5. Manifest 和 diff
-
-相关文件：
-
-- [include/yisync_sync.hpp](include/yisync_sync.hpp)
-- [src/yisync_sync.cpp](src/yisync_sync.cpp)
-
-### ManifestEntry
-
-`ManifestEntry` 表示已经在最终目录中可见的 entry：
+`MultiLineScheduler` 管每条 line 的发送条件：
 
 ```text
-file_id
-order_seq
-kind
-name
-link_target
-size
-checksum
+token bucket
+recv_window_bytes
+inflight_bytes
+pending sends
+connected / negotiated / healthy / stale
+missed heartbeat ticks
+lost sends
 ```
 
-`kind` 有三种：
+Sender 每 10ms 调一次：
 
 ```text
-RegularFile
-Directory
-Symlink
+network_.refill_ticks(1)
 ```
 
-`name` 是 stream root 下的安全相对路径，例如：
+这会给每条 line 的 token bucket 补 token，并推进 heartbeat timeout。
+
+如果 line 断开或 stale，scheduler 会把该 line 上未确认的 pending sends 转成 `LostSend`，再通过 `SenderNetwork::on_lost_sends()` 回调给 SenderApp。
+
+## 5. Sender 侧
+
+入口文件：
+
+- [include/sender/yisync_source.hpp](include/sender/yisync_source.hpp)
+- [src/sender/yisync_source.cpp](src/sender/yisync_source.cpp)
+- [include/sender/yisync_sender_plan.hpp](include/sender/yisync_sender_plan.hpp)
+- [src/sender/yisync_sender_plan.cpp](src/sender/yisync_sender_plan.cpp)
+- [include/sender/yisync_append_state.hpp](include/sender/yisync_append_state.hpp)
+- [src/sender/yisync_append_state.cpp](src/sender/yisync_append_state.cpp)
+- [include/sender/yisync_chunk_resend.hpp](include/sender/yisync_chunk_resend.hpp)
+- [src/sender/yisync_chunk_resend.cpp](src/sender/yisync_chunk_resend.cpp)
+- [include/sender/yisync_send_buffer.hpp](include/sender/yisync_send_buffer.hpp)
+- [src/sender/yisync_send_buffer.cpp](src/sender/yisync_send_buffer.cpp)
+- [src/sender/yisync_sender_app.cpp](src/sender/yisync_sender_app.cpp)
+
+### SourceDirectory
+
+`SourceDirectory` 是真实源目录 reader。
+
+它负责：
+
+- 扫描源目录得到 `Manifest1Stream`。
+- 过滤 entry name regex。
+- 返回 `SourceFile` 列表。
+- 按 `file_id + offset + len` 读取真实文件内容。
+- 计算文件 CRC32C。
+
+`SimulatedSourceReader` 是测试和 demo 用的数据源。它和真实 reader 共用 `ISourceReader` 接口，所以 Sender 发送路径不需要区分“真实文件”还是“模拟数据”。
+
+### Watcher
+
+`make_source_watcher()` 创建 watcher：
 
 ```text
-1.file
-sub/2.file
-emptydir
-sub/link_to_root
+Linux   -> inotify
+macOS   -> FSEvents
+fallback -> polling
 ```
 
-Receiver 会拒绝：
-
-- 空路径。
-- 绝对路径。
-- 包含 `..` 的路径。
-
-### file_id 怎么来
-
-当前兼容旧格式：
+watcher 事件不会直接生成 `CREATE` 或 `DATA`。它只触发：
 
 ```text
-1.file -> file_id = 1
-2.file -> file_id = 2
+rescan
+重新发送 Manifest1
+Receiver 重新生成 Manifest2
+Sender 按新的 Manifest2 继续发送
 ```
 
-对子目录、目录、软链接等，使用相对路径生成稳定 file_id。
+这样新增文件、append、事件丢失后的全量 rescan 都走同一条恢复路径。
 
-注意：现在文件顺序不靠 `file_id + 1`，而靠 `order_seq`。
+删除、重命名、原地覆盖不是当前业务语义，watcher 即使观察到这些事件，也不会生成删除或覆盖协议。
 
-### scan_manifest_stream()
+### StreamSendState 和 FileSendTask
 
-`scan_manifest_stream()` 做两件事：
-
-1. 扫描最终目录，生成 `entries`。
-2. 扫描 `.yisync_tmp/*.meta`，生成 `incomplete_chunks`。
-
-最终文件进入：
-
-```text
-ManifestStream.entries
-```
-
-未完成 chunk 进入：
-
-```text
-ManifestStream.incomplete_chunks
-```
-
-### IncompleteChunkFile
-
-`IncompleteChunkFile` 是 Receiver 重启后恢复大文件 chunk 的关键：
-
-```text
-order_seq
-file_id
-name
-final_size
-chunk_size
-chunk_count
-file_checksum
-prev_file_id
-prev_final_size
-prev_checksum
-received_chunks
-```
-
-这里的 `received_chunks` 不是低延迟 heartbeat 里的 received，而是 `.meta` 中 checkpoint 后的 bitmap。也就是“进程重启后还能相信”的状态。
-
-### diff_stream()
-
-Sender 收到 Receiver `MANIFEST` 后，用 `diff_stream()` 比较 source 和 receiver。
-
-结果：
-
-```text
-nullopt:
-  已完全一致，不需要传。
-
-SyncStart:
-  从某个 file_id 和 offset 开始传。
-```
-
-`SyncStart`：
+`StreamSendState` 表示一个 stream 的发送状态：
 
 ```text
 stream_id
-start_file_id
-start_offset
-start_action
+root
+entry_name_regex
+source_manifest
+tasks
+current_task
+manifest_applied
+complete
+has_pending_changes
 ```
 
-`StartAction`：
+`FileSendTask` 表示一个 entry 的发送任务：
 
 ```text
-ResumeExisting = Receiver 已有最终文件，从 offset append
-CreateMissing  = Receiver 缺 entry，从头创建
+stream_id / seq / file_id
+kind / name / link_target
+source_size / checksum
+reader
+chunk_mode
+append state
+chunk_resend
+FILE_BEGIN / FILE_COMMIT 状态
 ```
 
-`StartAction` 不是 wire 协议字段，它只是 Sender 本地 diff 结果。
-
-## 6. SourceDirectory
-
-相关文件：
-
-- [include/yisync_source.hpp](include/yisync_source.hpp)
-- [src/yisync_source.cpp](src/yisync_source.cpp)
-
-`SourceDirectory` 是 Sender 读取真实源目录的接口。
-
-常用方法：
+`AppendSendState` 单独承载 append 续传状态：
 
 ```text
-scan_manifest()
-  扫描源目录，得到 ManifestStream。
-
-files()
-  返回源目录中可同步的 SourceFile 列表。
-
-read_range(file_id, offset, len)
-  从真实文件读取一段内容，用于 DATA 或 CHUNK。
-
-full_checksum(file_id)
-  计算整文件 CRC32C，用于大文件 commit 校验。
+是否需要 CREATE
+CREATE 是否已发送 / 已确认
+DATA 是否已发送
+当前 append offset
+下一段 DATA offset
+当前 DATA 长度
+append seq
 ```
 
-`SourceFile`：
+SenderApp 只调用 helper：
 
 ```text
-file_id
-path
-manifest
+start_append_plan()
+mark_append_create_sent()
+mark_append_data_sent()
+mark_append_*_from_heartbeat()
+append_lost_matches()
+reset_append_inflight()
 ```
 
-### watcher 抽象
+这样 append 的 ack、断线匹配、重传状态更新不会散落在 App 里。
 
-`ISourceWatcher` 已经定义：
+### Sender 启动流程
+
+SenderApp 启动时：
 
 ```text
-poll() -> vector<WatchEvent>
+parse options
+build_source_streams()
+创建 SenderNetwork
+注册 on_message / on_connected / on_lost_sends
+network.start()
+启动 watcher，如果 watch=true
+启动 10ms tick
 ```
 
-事件类型：
+`build_source_streams()` 的来源有三种：
+
+1. 没有 `--source-root`，使用模拟数据。
+2. 配置了 `high_priority_dirs` / `low_priority_dirs`，每个目录映射成一个 stream。
+3. 使用 `--source-root`，如果 root 下有数字目录，则每个数字目录映射成 stream，否则整个 root 是默认 stream。
+
+注意：`high_priority_dirs` 和 `low_priority_dirs` 当前主要是配置分组和 stream 来源。真正的 QoS 权重还没实现，见 [todo.md](todo.md)。
+
+### Manifest1 发送
+
+每条 TCP line 完成 `Hello` 协商后，Sender 会调用：
 
 ```text
-Created
-Appended
-Modified
-Removed
+send_manifest1()
 ```
 
-当前只有 polling fallback。Linux `inotify` 和 macOS `FSEvents` 还没接。
+`Manifest1` 来自：
 
-## 7. ReceiverStream：小文件和 append
+```text
+manifest1_from_streams(next_manifest_id, streams_)
+```
 
-相关文件：
+然后进入：
 
-- [include/yisync_receiver.hpp](include/yisync_receiver.hpp)
-- [src/yisync_receiver.cpp](src/yisync_receiver.cpp)
+```text
+network_.send_control(Message{Manifest1}, label)
+```
 
-`ReceiverStream` 处理：
+SenderApp 不再显式指定 line，network 会从可用健康 line 中选择。
+
+### Manifest2 应用
+
+Receiver 回 `Manifest2` 后，Sender 对每个 stream 调用：
+
+```text
+apply_manifest2_to_stream(manifest2, stream)
+```
+
+返回值有三种结果：
+
+| 结果 | Sender 动作 |
+| --- | --- |
+| `InSync` | 标记 stream 完成 |
+| `ResumeExisting` | 从 `start_offset` 用 `DATA` 续传 |
+| `CreateMissing` 且小文件/目录/软链 | 发送 `CREATE`，普通文件继续 `DATA` |
+| `CreateMissing` 且大文件 | 发送 `FILE_BEGIN`，进入 chunk 模式 |
+
+### append / 小文件发送
+
+小文件、目录、软链和 append 都在 append 路径里处理。
+
+目录：
+
+```text
+CREATE(kind=Directory)
+Receiver mkdir
+Receiver expected_seq += 1
+```
+
+软链接：
+
+```text
+CREATE(kind=Symlink, link_target=...)
+Receiver symlink
+Receiver expected_seq += 1
+```
+
+普通小文件：
+
+```text
+CREATE(kind=RegularFile, final_size=N)
+DATA(offset=0, len<=64KB)
+DATA(offset=64KB, len<=64KB)
+...
+Receiver 写满 final_size
+Receiver expected_seq += 1
+```
+
+append 续传：
+
+```text
+Receiver Manifest2: ResumeExisting(file_id, start_offset)
+Sender 不发 CREATE
+Sender 从 start_offset 开始发 DATA
+```
+
+当前 `DATA` 每段最大等于 `chunk_size`，默认 64KB。即使 append 剩余超过 64KB，也仍然是多段 `DATA`，不会切到 `FILE_BEGIN/CHUNK/FILE_COMMIT`。这个语义在 [todo.md](todo.md) 里保留为待设计项。
+
+### chunk 发送
+
+缺失文件大于 64KB 时进入 chunk 模式：
+
+```text
+FILE_BEGIN(seq=N)
+CHUNK(seq=N, chunk_index=...)
+CHUNK(seq=N, chunk_index=...)
+FILE_COMMIT(seq=N)
+```
+
+`ChunkResendState` 负责 chunk 级状态：
+
+```text
+chunk_count
+send order
+acked bitmap
+sent bitmap
+line id
+send_tick
+attempts
+priority bitmap
+```
+
+它提供这些动作：
+
+| 函数 | 作用 |
+| --- | --- |
+| `initialize_chunk_resend_state()` | 初始化发送顺序和 bitmap |
+| `next_chunk_to_send()` | 找下一个未发、优先、或 RTO 到期的 chunk |
+| `mark_chunk_sent()` | 记录 chunk 发到了哪条 line、当前 tick、attempt |
+| `acknowledge_chunk()` | `HEARTBEAT.received_chunks` 到达后确认 chunk |
+| `mark_chunk_lost()` | line 断开后把 chunk 标成高优先级 |
+| `apply_missing_hints()` | Receiver 告诉缺口后，把对应 chunk 标成高优先级 |
+
+当前默认发送顺序是 tail-first，然后顺序发送剩余 chunk。这个主要是为了测试乱序接收路径，不是协议要求。
+
+### 发送缓冲和重传
+
+`SenderSendBuffer` 保存当前进程内“已发送但未确认”的消息副本。
+
+会进入发送缓冲的消息：
 
 ```text
 CREATE
 DATA
-```
-
-它适合：
-
-- 缺失小文件。
-- 目录创建。
-- 软链接创建。
-- 已有最终文件 append 续传。
-
-### ReceiverStreamState
-
-```text
-active
-expected_seq
-current_file_id
-current_offset
-next_create_file_id
-```
-
-关键点：
-
-- `expected_seq` 是下一个应该收到的 `CREATE/DATA` 序号。
-- `current_file_id` 是当前正在写的文件。
-- `current_offset` 是当前文件已经写到哪里。
-
-### apply(Create)
-
-`ReceiverStream::apply(const Create&)` 做这些检查：
-
-```text
-stream_id 正确
-seq == expected_seq
-kind 是 RegularFile / Directory / Symlink
-name 是安全相对路径
-如果有 prev_file_id，则前一个文件必须存在、size/checksum 匹配
-目标路径必须不存在
-```
-
-通过后：
-
-```text
-RegularFile: 创建空文件
-Directory:   创建目录
-Symlink:     创建软链接本身
-expected_seq += 1
-current_file_id = create.file_id
-current_offset = 0
-current_path = 目标路径
-```
-
-### apply(Data)
-
-`ReceiverStream::apply(const Data&)` 做这些检查：
-
-```text
-stream_id 正确
-seq == expected_seq
-file_id == current_file_id
-当前 entry 必须是 RegularFile
-offset == 目标文件当前大小
-raw_len == payload 解压后长度
-DATA CRC32C 正确
-```
-
-通过后：
-
-```text
-以 append 方式写目标文件
-expected_seq += 1
-current_offset = offset + raw_len
-```
-
-### append durable
-
-`DATA` 写完后，不代表已经掉电安全。ReceiverApp 会把该文件 fsync 投递给后台 disk writer。
-
-Heartbeat 中：
-
-```text
-offset:
-  已接受并写入的 offset。
-
-durable_offset:
-  后台 fsync 完成后的 offset。
-```
-
-Sender 判断 append 文件完成时，不只看 `next_seq`，还要求：
-
-```text
-durable_offset >= source_size
-```
-
-## 8. ChunkedReceiverStream：大文件分块
-
-相关文件：
-
-- [include/yisync_receiver.hpp](include/yisync_receiver.hpp)
-- [src/yisync_receiver.cpp](src/yisync_receiver.cpp)
-
-`ChunkedReceiverStream` 处理：
-
-```text
 FILE_BEGIN
 CHUNK
 FILE_COMMIT
 ```
 
-适合：
+发送缓冲的释放来源：
 
 ```text
-缺失文件且 final_size > 64KB
+HEARTBEAT.next_seq
+HEARTBEAT.received_chunks
+FILE_BEGIN ready heartbeat
 ```
 
-append 续传即使增量超过 64KB，也不切到 chunk 模式。因为 Receiver 已经有最终文件，安全语义是继续 append，而不是把最终文件搬回 `.yisync_tmp`。
-
-### ActiveFile
-
-`ChunkedReceiverStream::Impl::ActiveFile` 是一个正在接收的大文件：
+收到 `NACK` 时：
 
 ```text
-order_seq
-file_id
-name
-final_size
-chunk_size
-chunk_count
-file_checksum
-prev_file_id
-prev_final_size
-prev_checksum
-temp_path
-final_path
-received bitmap
-checkpointed bitmap
-received_count
-checkpointed_count
-pending_checkpoint_bytes
-commit_pending
+SenderSendBuffer 根据 stream/file/seq/offset/chunk_index 找原包
+找到 -> 放入 retransmit_queue
+找不到 -> 如果 reason 可恢复，重新发送 Manifest1
+找不到 -> 如果 reason 不可恢复，最终失败
 ```
 
-其中：
+断线时：
 
 ```text
-temp_path  = .yisync_tmp/<order_seq>_<file_id>.file.tmp
-meta_path  = temp_path + ".meta"
-final_path = receiver root 下的安全相对路径
+network/scheduler 把 line pending sends 转 LostSend
+SenderApp 优先从 SenderSendBuffer 找原包重发
+找不到时根据类型重置 task 状态或触发 Manifest 恢复
 ```
 
-### apply(FileBegin)
-
-`FILE_BEGIN` 是大文件的开始。
-
-检查：
+RTO 路径：
 
 ```text
-stream_id 正确
-order_seq == expected_order_seq
-final_size 必须进入 chunk 模式
-chunk_size == 64KB
-chunk_count 正确
-目标最终文件不存在
-prev_file_id 如果存在，则前一个文件 size/checksum 匹配
+ACK 样本更新 RtoEstimator
+tick 中查 expired_keys
+超时消息进入 retransmit_queue
+重传次数超过上限 -> Manifest1 恢复
+Manifest 恢复次数超过上限 -> final failure
 ```
 
-通过后：
+## 6. Receiver 侧
+
+入口文件：
+
+- [include/receiver/yisync_receiver.hpp](include/receiver/yisync_receiver.hpp)
+- [src/receiver/yisync_receiver.cpp](src/receiver/yisync_receiver.cpp)
+- [include/receiver/yisync_receiver_streams.hpp](include/receiver/yisync_receiver_streams.hpp)
+- [src/receiver/yisync_receiver_streams.cpp](src/receiver/yisync_receiver_streams.cpp)
+- [include/receiver/yisync_receiver_coordinator.hpp](include/receiver/yisync_receiver_coordinator.hpp)
+- [src/receiver/yisync_receiver_coordinator.cpp](src/receiver/yisync_receiver_coordinator.cpp)
+- [include/receiver/yisync_disk_writer.hpp](include/receiver/yisync_disk_writer.hpp)
+- [src/receiver/yisync_disk_writer.cpp](src/receiver/yisync_disk_writer.cpp)
+- [include/receiver/yisync_commit_poller.hpp](include/receiver/yisync_commit_poller.hpp)
+- [src/receiver/yisync_commit_poller.cpp](src/receiver/yisync_commit_poller.cpp)
+- [src/receiver/yisync_receiver_app.cpp](src/receiver/yisync_receiver_app.cpp)
+
+### ReceiverApp
+
+ReceiverApp 是 glue 层。它负责：
+
+- 解析后的 `NodeOptions` 接入。
+- 创建 mount root。
+- 创建 `ReceiverNetwork`。
+- 创建 `ReceiverStreamMap`。
+- 创建 `ReceiverCoordinator`。
+- 接收 `Manifest1`，生成 `Manifest2`。
+- 把 `CREATE/DATA/FILE_BEGIN/CHUNK/FILE_COMMIT` 转给 coordinator。
+- 执行 coordinator 返回的 heartbeat / nack / log / poll action。
+- 定时 flush heartbeat。
+- 定时 poll commit completion。
+
+ReceiverApp 不再直接散落 append/chunk 状态机细节。
+
+### ReceiverStreamMap
+
+`ReceiverStreamMap` 按 stream id 管理接收上下文：
 
 ```text
-创建 .tmp 临时文件
-写一份初始 .meta
-active[order_seq] = ActiveFile
+stream_id
+root
+ReceiverStream append
+ChunkedReceiverStream chunk
+append durable 状态
+chunk commit 状态
 ```
 
-### apply(Chunk)
+一个 stream 同时有 append receiver 和 chunk receiver，但同一时刻的业务推进由 `seq` 和 coordinator 保证不会乱序对外可见。
 
-`CHUNK` 是文件的一段数据。
+### ReceiverCoordinator
 
-检查：
+`ReceiverCoordinator` 是 Receiver 侧业务协调层。它接收消息，返回 action batch：
 
 ```text
-stream_id 正确
-order_seq == expected_order_seq
-FILE_BEGIN 已经存在
-file_id 匹配
-chunk_index 在范围内
-offset == chunk_index * chunk_size
-raw_len 是该 chunk 应有长度
-payload CRC32C 正确
+apply_create()
+apply_data()
+apply_begin()
+apply_chunk()
+apply_commit()
+poll_completions()
 ```
 
-通过后：
+返回的 action 包含：
 
 ```text
-seek 到 offset
-写入 .tmp
-received[chunk_index] = true
-received_count += 1
-pending_checkpoint_bytes += raw_len
+heartbeats
+nacks
+logs
+schedule_quiet_stop
+schedule_commit_poll
+failed
+failure message
 ```
 
-重复 chunk 会被幂等忽略。
+这样 ReceiverApp 只负责执行 action，不直接把错误处理、heartbeat flush、commit poll 和 stream 状态混在一起。
 
-### missing_ranges()
+### ReceiverStream
 
-Receiver 收到后面的 chunk，但前面有缺口时，会通过 `missing_ranges` 提示 Sender。
+`ReceiverStream` 处理目录、软链接、小文件和 append `DATA`。
+
+`CREATE` 成功后：
+
+```text
+Directory -> mkdir -> expected_seq += 1
+Symlink   -> symlink -> expected_seq += 1
+RegularFile final_size=0 -> create empty file -> expected_seq += 1
+RegularFile final_size>0 -> 等 DATA 写满
+```
+
+`DATA` 成功后：
+
+```text
+校验 seq/file_id/offset/final_size/checksum
+append payload
+如果写满 final_size，expected_seq 推进
+coordinator 可能提交 append fsync task
+HEARTBEAT 返回 offset / durable_offset
+```
+
+### ChunkedReceiverStream
+
+`ChunkedReceiverStream` 处理大文件：
+
+```text
+FILE_BEGIN -> 创建 .yisync_tmp 临时文件和内存 bitmap
+CHUNK      -> 校验并按 offset 写临时文件，标记 bitmap
+FILE_COMMIT -> 检查所有 chunk 已收到，生成 commit task
+```
+
+注意：bitmap 是内存状态，不做持久化。Receiver 创建 chunk stream 时会清理旧 `.yisync_tmp`。
+
+`missing_ranges()` 会根据当前 bitmap 生成缺口范围，用于 `HEARTBEAT.missing_ranges`。Sender 收到后把对应 chunk 标为高优先级重传。
+
+### SpscDiskWriter
+
+`SpscDiskWriter` 是自己实现的 bounded SPSC 队列加后台线程。
+
+它执行会阻塞 event loop 的磁盘任务：
+
+- append 文件 fsync。
+- chunk commit 中的整文件 CRC32C。
+- rename 临时文件到最终路径。
+- fsync 最终文件和父目录。
+
+当前队列容量固定为 128。队列满时还是 fail-fast，后续要接入 scheduler 背压。
+
+### CommitCompletionPoller
+
+chunk commit 在 writer 线程里完成。event loop 不能阻塞等待，所以 `CommitCompletionPoller` 定时检查 completion：
+
+```text
+commit task queued
+schedule commit poll
+writer 完成
+poller 发现完成
+coordinator 推进 expected_seq
+coordinator 产生最终 HEARTBEAT
+```
+
+## 7. 端到端流程
+
+### 启动握手
+
+```mermaid
+sequenceDiagram
+  participant A as Sender
+  participant N as Network
+  participant B as Receiver
+
+  A->>N: start TCP lines
+  N->>B: TCP connect
+  A->>B: Hello(Role=Sender)
+  B->>A: Hello(Role=Receiver)
+  N->>N: negotiated=true
+  A->>B: Manifest1
+  B->>B: scan receiver directory
+  B->>B: diff_stream()
+  B->>A: Manifest2
+```
+
+### 小文件或 append
+
+```mermaid
+sequenceDiagram
+  participant A as Sender
+  participant B as Receiver
+  participant W as DiskWriter
+
+  A->>B: Manifest1
+  B->>A: Manifest2(CreateMissing or ResumeExisting)
+  A->>B: CREATE if needed
+  B->>A: HEARTBEAT create ready
+  A->>B: DATA(offset=...)
+  B->>W: append fsync task
+  W-->>B: durable offset done
+  B->>A: HEARTBEAT(next_seq, offset, durable_offset)
+```
+
+### 大文件 chunk
+
+```mermaid
+sequenceDiagram
+  participant A as Sender
+  participant B as Receiver
+  participant W as DiskWriter
+
+  A->>B: Manifest1
+  B->>A: Manifest2(CreateMissing)
+  A->>B: FILE_BEGIN
+  B->>A: HEARTBEAT begin ready
+  A->>B: CHUNK 2
+  A->>B: CHUNK 0
+  A->>B: CHUNK 1
+  B->>A: HEARTBEAT(received_chunks, missing_ranges)
+  A->>B: FILE_COMMIT
+  B->>W: CRC32C + rename + fsync
+  W-->>B: commit complete
+  B->>A: HEARTBEAT(next_seq)
+```
+
+### NACK 重传
+
+```text
+Receiver 拒绝消息并返回 NACK
+Sender 根据 NACK 查 SenderSendBuffer
+找到原包 -> 进入 retransmit_queue
+retransmit_queue 仍经过 network scheduler
+发送成功后等待 HEARTBEAT 确认
+```
+
+如果发送缓冲找不到，且 reason 可恢复：
+
+```text
+Sender 清空当前发送缓冲
+重置 stream manifest_applied
+重新发送 Manifest1
+Receiver 重新扫描目标目录
+Receiver 返回新的 Manifest2
+Sender 根据最终目录状态续传或重传
+```
+
+### TCP line 断开
+
+```text
+Async connection close/error
+SenderNetwork 标记 line unavailable
+Scheduler clear in-flight 并产生 LostSend
+SenderApp 收到 LostSend
+能在 SenderSendBuffer 找到原包 -> 重发
+找不到但可恢复 -> 重新 Manifest1 / Manifest2
+SenderLineSet 按 ReconnectPolicy 自动重连
+Hello 协商成功后 line 回到 scheduler
+```
+
+## 8. 文件系统布局
+
+### 配置目录挂载
+
+Sender 配置：
+
+```ini
+[sender]
+high_priority_dirs={/private/tmp/yisync_multi_a::.*\.(file|bin)$,/private/tmp/yisync_multi_b::.*\.(keep|dat)$}
+
+[receiver]
+mount_dir=/private/tmp/yisync_multi_receiver
+```
+
+Receiver 会按 Sender 的源目录绝对路径挂载：
+
+```text
+/private/tmp/yisync_multi_receiver/private/tmp/yisync_multi_a/...
+/private/tmp/yisync_multi_receiver/private/tmp/yisync_multi_b/...
+```
+
+如果源目录不存在，Sender 启动会报错。Receiver 侧目录不存在会自动创建。
+
+### 子目录和空目录
+
+目录作为 `ManifestEntry(kind=Directory)` 进入 manifest。Sender 发送 `CREATE(kind=Directory)`，Receiver 创建目录并推进 `seq`。
+
+这意味着：
+
+```text
+source/sub/
+source/sub/file.txt
+```
+
+会按 manifest 顺序创建：
+
+```text
+receiver/.../source/sub/
+receiver/.../source/sub/file.txt
+```
+
+空目录也会同步。
+
+### 软链接
+
+软链接作为 `ManifestEntry(kind=Symlink)` 进入 manifest。Receiver 创建软链接本身，不读取目标内容。
+
+当前不做软链接 target 变化后的更新策略，因为原地修改/覆盖不是当前场景。
+
+## 9. 持久性和恢复边界
+
+### Sender
+
+Sender 没有本地持久化：
+
+- 不写 checkpoint。
+- 不写已发送 chunk bitmap。
+- 不写本地 manifest 状态。
+
+Sender 进程重启后，只能重新扫描源目录，再发 `Manifest1`。
+
+### Receiver 最终目录
+
+Receiver 的最终目录是恢复依据：
+
+- 已完成小文件会出现在最终目录。
+- 已完成 append 文件的大小和 checksum 会被下次 scan 看到。
+- 已完成大文件只有 `FILE_COMMIT` 成功后才 rename 到最终目录。
+
+### `.yisync_tmp`
+
+`.yisync_tmp` 不是恢复依据：
+
+- 存放当前进程内 chunk 临时文件。
+- 存放当前进程内乱序 chunk 写入结果。
+- Receiver 重启或新建 chunk stream 时会清理旧临时区。
+- 未 commit 的大文件不会出现在 `Manifest2` 恢复依据里。
+
+所以大文件如果在 commit 前断到进程重启：
+
+```text
+Sender 重新发送 Manifest1
+Receiver 扫描最终目录，看不到该大文件
+Receiver 返回 Manifest2(CreateMissing)
+Sender 从 FILE_BEGIN 重新发送完整大文件
+```
+
+## 10. 配置解析
+
+配置解析入口：
+
+- [include/node/yisync_node_common.hpp](include/node/yisync_node_common.hpp)
+- [src/node/yisync_node_common.cpp](src/node/yisync_node_common.cpp)
+
+支持：
+
+- `common.link_num`
+- `common.Bandwidth_Limit`
+- `common.recv_window`
+- `common.chunk_size`
+- `common.heartbeat_interval_ms`
+- `common.heartbeat_ack_batch_size`
+- `common.heartbeat_timeout_ticks`
+- `common.chunk_retransmit_ticks`
+- `common.max_retransmit_retries`
+- `common.max_manifest_recovery_attempts`
+- `common.max_missing_ranges`
+- `common.reconnect_base_delay_ms`
+- `common.reconnect_max_delay_ms`
+- `common.watch`
+- `common.watch_backend`
+- `common.watch_interval_ms`
+- `common.watch_rescan_debounce_ms`
+- `common.compress`
+- `common.checksum`
+- `sender.high_priority_dirs`
+- `sender.low_priority_dirs`
+- `receiver.mount_dir`
+
+目录配置格式：
+
+```text
+path
+path::regex
+stream_id:path
+stream_id:path::regex
+```
+
+多个目录写在 `{}` 中，用逗号分隔。
 
 例子：
 
-```text
-收到 chunk 2
-没收到 chunk 0 和 1
-
-missing_ranges = 0-1
-```
-
-Sender 收到 missing hint 后，不一定立刻重传。当前策略是：
-
-```text
-如果 chunk 从未发送:
-  优先发送
-
-如果 chunk 已发送但未确认:
-  线路断开或超过基础 RTO 才重传
-
-如果 chunk 已确认:
-  忽略
-```
-
-### checkpoint()
-
-`checkpoint()` 不直接写盘，它只生成 `ChunkCheckpointTask`。
-
-原因：
-
-```text
-event loop 不能做 fsync
-fsync 可能很慢
-```
-
-所以流程是：
-
-```text
-event loop:
-  ChunkedReceiverStream::checkpoint()
-  得到 ChunkCheckpointTask
-  投递给 ReceiverApp::DiskWriter
-
-writer thread:
-  ChunkedReceiverStream::write_checkpoint_task(task)
-```
-
-`.meta` 写盘顺序：
-
-```text
-fsync .tmp
-写 .meta.writing
-fsync .meta.writing
-rename .meta.writing -> .meta
-fsync .yisync_tmp
-```
-
-这样 `.meta` 不会写一半覆盖旧状态。
-
-### FILE_COMMIT 后台化
-
-`FILE_COMMIT` 以前是强 barrier：drain writer、校验整文件、rename、fsync，都在 event loop 路径里。现在已经拆成后台化。
-
-现在流程：
-
-```text
-event loop:
-  prepare_commit()
-  只检查 stream/order/file/chunk 完整性
-  生成 ChunkCommitTask
-  投递给 DiskWriter
-
-writer thread:
-  write_commit_task()
-  校验整文件 CRC32C
-  写最终 checkpoint
-  rename .tmp -> final_path
-  fsync final file
-  fsync final parent directory
-  删除 .meta
-  fsync .yisync_tmp
-
-event loop:
-  poll_chunk_commit()
-  finish_commit()
-  expected_order_seq 前进
-  发送最终 HEARTBEAT
-```
-
-关键接口：
-
-```text
-prepare_commit(const FileCommit&, ChunkCommitTask&)
-write_commit_task(const ChunkCommitTask&)
-finish_commit(const ChunkCommitResult&)
-abort_commit(order_seq)
-```
-
-为什么 `expected_order_seq` 要等后台完成后再推进？
-
-因为 `expected_order_seq` 代表这个文件已经安全提交。后台 commit 没完成前，最终文件还没 rename/fsync 完，不能告诉 Sender “完成了”。
-
-### 重启恢复
-
-Receiver 启动时会：
-
-```text
-扫描最终目录 entries
-扫描 .yisync_tmp/*.meta
-找到对应 .tmp
-恢复 ActiveFile
-恢复 received/checkpointed bitmap
-expected_order_seq 回到最小未完成 order_seq
-```
-
-恢复后 Sender 重连，Receiver 发送 MANIFEST，里面带 `incomplete_chunks`。Sender 根据 `.meta` 中的 checkpointed chunk 跳过已完成部分，只发送缺失 chunk。
-
-## 9. ReceiverApp：B 端进程怎么跑
-
-相关文件：
-
-- [src/yisync_receiver_app.cpp](src/yisync_receiver_app.cpp)
-
-`ReceiverApp` 是真实 receiver 进程。
-
-### run()
-
-启动时：
-
-```text
-创建 receiver root
-按 --lines 监听多个 TCP 端口
-启动 checkpoint timer
-启动 heartbeat timer
-启动超时 timer
-进入 EventLoop::run()
-```
-
-### on_accept()
-
-每条 TCP line 接入后：
-
-```text
-创建 AsyncFrameConnection
-注册 on_message / on_error / on_close
-start(loop)
-send_manifest(line_id)
-```
-
-这就是“连接建立后，B 端先发当前目录信息”。
-
-### send_manifest()
-
-`send_manifest()` 会：
-
-```text
-找出所有 stream root
-每个 stream 调 scan_manifest_stream()
-合成 Manifest
-send_message(line_id, Manifest)
-```
-
-默认 stream 是 receiver root。数字目录也会当成 stream root。
-
-### StreamReceivers
-
-`StreamReceivers` 是每个 stream 的 Receiver 端上下文：
-
-```text
-stream_id
-root
-append ReceiverStream
-chunk ChunkedReceiverStream
-append durable 状态
-chunk commit pending 状态
-```
-
-为什么一个 stream 里有 append 和 chunk 两套 receiver？
-
-因为小文件和 append 用 `ReceiverStream`，大文件用 `ChunkedReceiverStream`。同一个目录里可能小文件和大文件混合，所以需要协调它们看到的已提交状态。
-
-### DiskWriter
-
-`ReceiverApp::DiskWriter` 是后台写盘线程。
-
-特点：
-
-```text
-bounded SPSC ring queue
-单生产者 = event loop
-单消费者 = writer thread
-不用 mutex
-不用 condition_variable
-```
-
-它执行：
-
-- chunk checkpoint `.meta` 写盘。
-- append 文件 fsync。
-- chunk commit。
-
-队列满时当前是 fail-fast，后续要接背压。
-
-### heartbeat 聚合
-
-Receiver 不对每条成功消息立刻发 ACK。
-
-普通 `DATA/CHUNK`：
-
-```text
-queue_heartbeat()
-每 50ms flush_all_heartbeats()
-```
-
-状态边界：
-
-```text
-CREATE      立即 flush
-FILE_BEGIN  立即 flush
-FILE_COMMIT 后台 commit 完成后 flush
-```
-
-### apply_create()
-
-```text
-append_receiver.apply(create)
-失败 -> NACK
-成功 -> reset append durable context
-刷新 chunk receiver 已提交状态
-发送 HEARTBEAT
-```
-
-### apply_data()
-
-```text
-append_receiver.apply(data)
-失败 -> NACK
-成功 -> maybe_enqueue_append_fsync()
-queue HEARTBEAT(offset, durable_offset)
-刷新 chunk receiver 已提交状态
-```
-
-### apply_begin()
-
-```text
-chunk_receiver.apply(begin)
-失败 -> NACK
-成功 -> HEARTBEAT(begin ready)
-```
-
-### apply_chunk()
-
-```text
-chunk_receiver.apply(chunk)
-失败 -> NACK
-成功 -> HEARTBEAT(received_chunks, missing_ranges)
-如果 pending_checkpoint_bytes >= 4MB，调度 checkpoint_now()
-```
-
-### checkpoint_now()
-
-```text
-遍历所有 stream
-对每个 chunk receiver 调 checkpoint()
-把每个 ChunkCheckpointTask 投递给 DiskWriter
-队列满 -> fail-fast
-```
-
-### apply_commit()
-
-```text
-如果同 stream 已有 commit pending:
-  同一个 commit 重复到达 -> 忽略，等后台完成
-  不同 commit -> NACK
-
-prepare_commit()
-失败 -> NACK
-成功 -> 生成 ChunkCommitTask
-投递 DiskWriter
-启动 commit poll timer
-```
-
-### poll_chunk_commit()
-
-```text
-后台 commit 失败:
-  abort_commit()
-  如果原 line 还在，发送 NACK
-  fail receiver
-
-后台 commit 成功:
-  finish_commit()
-  refresh append receiver committed state
-  如果原 line 还在，发送最终 HEARTBEAT
-  schedule_quiet_stop()
-```
-
-注意：如果 commit 后原 TCP line 已断开，Receiver 不会往关闭连接发 heartbeat。Sender 重连后会重新拿 MANIFEST 或重发 commit。
-
-## 10. SenderApp：A 端进程怎么跑
-
-相关文件：
-
-- [src/yisync_sender_app.cpp](src/yisync_sender_app.cpp)
-
-`SenderApp` 是真实 sender 进程。
-
-### run()
-
-启动时：
-
-```text
-构建 source streams
-连接每条 TCP line
-启动 10ms tick
-启动 30s timeout
-进入 EventLoop::run()
-```
-
-### build_source_streams()
-
-如果没有 `--source-root`：
-
-```text
-生成模拟数据
-创建一个默认 stream 9001
-创建一个 FileSendTask
-```
-
-如果有 `--source-root`：
-
-```text
-扫描 source-root 下的数字子目录
-如果有数字子目录:
-  每个数字子目录是一个 stream
-否则:
-  source-root 是默认 stream 9001
-
-每个 stream:
-  SourceDirectory.scan_manifest()
-  SourceDirectory.files()
-  每个 SourceFile -> FileSendTask
-```
-
-### FileSendTask
-
-`FileSendTask` 是 Sender 侧“一个 entry 怎么发送”的状态。
-
-重要字段：
-
-```text
-stream_id
-order_seq
-file_id
-kind
-name
-link_target
-source_size
-source_checksum
-range_checksum
-real_source
-source_root
-simulated_data
-```
-
-chunk 相关字段：
-
-```text
-chunk_mode
-chunk_count
-chunk_order
-chunk_acked
-chunk_sent
-chunk_line
-chunk_send_tick
-chunk_attempts
-chunk_priority
-begin_sent
-begin_ready
-commit_sent
-resume_from_incomplete
-```
-
-append 相关字段：
-
-```text
-append_needs_create
-append_data_needed
-append_create_sent
-append_create_ready
-append_data_sent
-append_offset
-append_next_offset
-append_current_data_len
-append_create_seq
-append_data_seq
-append_done_next_seq
-```
-
-### StreamSendState
-
-`StreamSendState` 是 Sender 侧“一个 stream 的发送状态”：
-
-```text
-stream_id
-root
-source_directory
-source_manifest
-tasks
-current_task
-next_append_seq
-manifest_applied
-complete
-```
-
-同一个 stream 一次只推进一个 `current_task`，保证目录内严格一致。
-
-### 连接和重连
-
-每条 line 有：
-
-```text
-id
-endpoint
-connection
-connector
-connected
-connecting
-reconnect_scheduled
-reconnect_attempts
-```
-
-连接失败或断开时：
-
-```text
-scheduler.on_line_disconnected()
-把该 line 上未确认 chunk 标回未发送
-begin/commit 如果发在该 line 且还没确认，也标回未发送
-按指数退避 schedule_reconnect()
-```
-
-### on_manifest()
-
-Receiver 发来 MANIFEST 后：
-
-```text
-对每个 StreamSendState 调 apply_stream_manifest()
-```
-
-### apply_stream_manifest()
-
-流程：
-
-```text
-找到 receiver 对应 stream 的 manifest
-diff_stream(source_entries, receiver_entries)
-
-如果已经一致:
-  stream complete
-
-如果需要 ResumeExisting:
-  走 append plan
-
-如果需要 CreateMissing 且 task 是 chunk:
-  apply_chunk_resume()
-
-否则:
-  apply_append_plan()
-```
-
-### apply_chunk_resume()
-
-用于断线或进程重启后大文件续传：
-
-```text
-plan_chunk_resume_from_manifest()
-如果最终文件已经完整:
-  advance_stream_task()
-如果 receiver 有 incomplete chunk:
-  checkpointed chunk 标为 acked
-  只发送缺失 chunk
-否则:
-  重新发送 FILE_BEGIN
-```
-
-### append 发送
-
-`apply_append_plan()` 先计算：
-
-```text
-是否需要 CREATE
-从哪个 offset 开始 DATA
-DATA 分几段
-每段最大 64KB
-最终 append_done_next_seq 是多少
-```
-
-`send_append_if_possible()` 负责真正发送：
-
-```text
-如果需要 CREATE 且没发送:
-  try_send_ordered(Create)
-  等 heartbeat next_seq 前进
-
-如果 CREATE ready 且需要 DATA:
-  读取 source payload
-  构造 Data
-  try_send_ordered(Data)
-  等 heartbeat next_seq 和 durable_offset
-```
-
-### chunk 发送
-
-`send_file_begin()`：
-
-```text
-构造 FILE_BEGIN
-通过 scheduler 选 line
-发送
-等待 begin ready heartbeat
-```
-
-`schedule_chunk_work()`：
-
-```text
-如果 begin 未 ready:
-  尝试发送 FILE_BEGIN
-
-循环选择下一个未发送 chunk:
-  优先 chunk_priority
-  再按 chunk_order
-  读取 payload
-  make_chunk_from_payload()
-  scheduler.try_acquire()
-  发送 CHUNK
-  记录 chunk_sent / chunk_line / chunk_send_tick / attempts
-
-如果全部 chunk acked:
-  send_commit_if_possible()
-```
-
-`send_commit_if_possible()`：
-
-```text
-构造 FILE_COMMIT
-通过 scheduler 选 line
-发送
-等待 heartbeat.next_seq > order_seq
-```
-
-### on_heartbeat()
-
-Sender 收到 HEARTBEAT 后：
-
-```text
-scheduler.on_heartbeat()
-找到对应 stream 和 current task
-```
-
-append 模式：
-
-```text
-CREATE heartbeat 到达 -> append_create_ready = true
-DATA heartbeat 到达 -> append_next_offset 前进
-durable_offset >= source_size -> 文件完成
-advance_stream_task()
-```
-
-chunk 模式：
-
-```text
-begin ready heartbeat -> begin_ready = true
-received_chunks -> 对应 chunk_acked = true
-missing_ranges -> 对应 chunk_priority = true
-commit_sent 且 next_seq > order_seq -> 文件完成
-advance_stream_task()
-```
-
-### tick()
-
-每 10ms tick 做：
-
-```text
-current_tick_ += 1
-scheduler.refill_ticks(1)
-检查 line stale / heartbeat timeout
-检查 chunk 基础 RTO
-schedule_work()
-```
-
-当前 RTO 还是固定 tick，不是基于 RTT 动态计算。
-
-## 11. Scheduler：限速、背压、选线
-
-相关文件：
-
-- [include/yisync_scheduler.hpp](include/yisync_scheduler.hpp)
-- [src/yisync_scheduler.cpp](src/yisync_scheduler.cpp)
-
-### TokenBucket
-
-每条 line 有一个 token bucket：
-
-```text
-tokens_per_tick = 每 10ms 增加多少 token
-capacity        = 桶最大容量
-tokens          = 当前可用额度
-```
-
-只有 token 足够，才允许发送。
-
-### recv_window 和 inflight
-
-除了限速，还要看 Receiver 窗口：
-
-```text
-inflight_bytes + message_size <= recv_window_bytes
-```
-
-`inflight_bytes` 表示已经发出去但还没被 Receiver heartbeat 确认的数据。
-
-### LineState
-
-每条 line 维护：
-
-```text
-connected
-healthy
-stale
-missed_heartbeat_ticks
-consecutive_failures
-last_completed_bytes
-pending sends
-```
-
-### try_acquire()
-
-Sender 发送前先问 scheduler：
-
-```text
-SendRequest -> try_acquire() -> optional<SendGrant>
-```
-
-如果返回空，说明现在不能发，等待下一次 tick 或 heartbeat。
-
-如果返回 `SendGrant`：
-
-```text
-line_id = 选中的 line
-bytes   = 本次占用额度
-```
-
-### on_heartbeat()
-
-heartbeat 到达后：
-
-```text
-释放 pending send
-降低 inflight
-更新 recv_window
-标记 line healthy
-清 stale
-```
-
-### line 断开
-
-line 断开后：
-
-```text
-scheduler 清理该 line pending / inflight
-Sender 把该 line 上未 ack 的 chunk 重新标记为未发送
-```
-
-这样 chunk 可以换另一条健康线路重发。
-
-## 12. 网络层和 event loop
-
-相关文件：
-
-- [include/yisync_async.hpp](include/yisync_async.hpp)
-- [src/yisync_async.cpp](src/yisync_async.cpp)
-
-### EventLoop
-
-`EventLoop` 是一个简单的 `poll` 循环：
-
-```text
-watch_fd(fd, events, callback)
-update_fd(fd, events)
-unwatch_fd(fd)
-call_later(delay, callback)
-run()
-stop()
+```ini
+high_priority_dirs={/tmp/a::.*\.(file|bin)$,/tmp/b::.*\.(keep|dat)$}
 ```
 
-它同时处理：
+regex 对源目录内的相对路径做 `regex_search`，效果接近 `grep -E`。
 
-- TCP fd 可读可写。
-- 定时器。
+配置只在启动时读取。不支持热更新。
 
-### AsyncFrameConnection
+## 11. 测试
 
-它包装一个非阻塞 TCP fd。
+CTest 入口在 [CMakeLists.txt](CMakeLists.txt)。
 
-发送：
+运行：
 
-```text
-send(Message)
-  encode_frame()
-  放入 write_queue
-  POLLOUT 时 flush_writes()
+```bash
+ctest --test-dir build-cpp20 --output-on-failure
 ```
 
-接收：
+C++ 单元测试：
 
-```text
-POLLIN
-  read_available()
-  parse_frames()
-  decode_message()
-  message_callback(message)
-```
-
-TCP 是流，所以 `parse_frames()` 会用 header 的 `body_len` 等完整 frame 收齐后才 decode。
-
-### AsyncTcpListener
-
-Receiver 用它监听多条 TCP line。
-
-```text
-listen_async_tcp()
-listener.start(loop, on_accept)
-```
-
-### async_connect_tcp()
-
-Sender 用它异步拨号。
-
-连接成功：
-
-```text
-on_connected(line_id, connection)
-```
-
-失败：
-
-```text
-schedule_reconnect(line_id)
-```
-
-## 13. 完整流程：小文件
-
-假设源目录有一个小文件：
-
-```text
-source/a.txt size = 10KB
-```
-
-流程：
-
-```text
-Receiver 启动
-Sender 连接 Receiver
-Receiver 发送 MANIFEST
-Sender diff 发现 a.txt 缺失
-Sender 生成 FileSendTask，chunk_mode = false
-Sender 发送 CREATE
-Receiver 创建空文件
-Receiver heartbeat next_seq 前进
-Sender 发送 DATA
-Receiver 校验 CRC32C、offset、seq，append 写入
-Receiver 投递 append fsync 到 DiskWriter
-DiskWriter fsync 完成
-Receiver heartbeat durable_offset 前进
-Sender 判断文件完成
-```
-
-关键代码：
-
-```text
-Sender:
-  apply_stream_manifest()
-  apply_append_plan()
-  send_append_if_possible()
-  on_heartbeat()
-
-Receiver:
-  apply_create()
-  ReceiverStream::apply(Create)
-  apply_data()
-  ReceiverStream::apply(Data)
-  maybe_enqueue_append_fsync()
-  poll_append_fsync()
-```
-
-## 14. 完整流程：大文件 chunk
-
-假设源目录有一个大文件：
-
-```text
-source/big.bin size = 160KB
-chunk_size = 64KB
-chunk_count = 3
-```
-
-流程：
-
-```text
-Receiver 发送 MANIFEST
-Sender diff 发现 big.bin 缺失
-Sender 生成 chunk FileSendTask
-Sender 发送 FILE_BEGIN
-Receiver 创建 .tmp 和初始 .meta
-Receiver heartbeat begin ready
-Sender 将 chunk 0/1/2 交给 scheduler
-Scheduler 分配到不同 TCP line
-Receiver 按 chunk_index 乱序写 .tmp
-Receiver heartbeat received_chunks / missing_ranges
-Sender 标记 chunk acked
-所有 chunk acked 后 Sender 发送 FILE_COMMIT
-Receiver event loop prepare_commit()
-Receiver 投递 ChunkCommitTask 到 DiskWriter
-DiskWriter 校验整文件 CRC32C、checkpoint、rename、fsync
-Receiver poll_chunk_commit()
-Receiver finish_commit()
-Receiver heartbeat next_seq 前进
-Sender 判断 big.bin 完成
-```
-
-关键代码：
-
-```text
-Sender:
-  apply_chunk_resume()
-  send_file_begin()
-  schedule_chunk_work()
-  send_commit_if_possible()
-  on_heartbeat()
-
-Receiver:
-  apply_begin()
-  ChunkedReceiverStream::apply(FileBegin)
-  apply_chunk()
-  ChunkedReceiverStream::apply(Chunk)
-  apply_commit()
-  ChunkedReceiverStream::prepare_commit()
-  ChunkedReceiverStream::write_commit_task()
-  poll_chunk_commit()
-```
-
-## 15. 完整流程：断线重连
-
-断线时，Sender 不依赖本地持久化状态。
-
-运行中 line 断开：
+| 文件 | 覆盖点 |
+| --- | --- |
+| [tests/cpp/protocol_decode_test.cpp](tests/cpp/protocol_decode_test.cpp) | 所有消息 round-trip、Hello negotiation、malformed frame smoke |
+| [tests/cpp/network_scheduler_test.cpp](tests/cpp/network_scheduler_test.cpp) | scheduler、line health、lost send、control queue |
+| [tests/cpp/chunk_resend_test.cpp](tests/cpp/chunk_resend_test.cpp) | chunk resend、missing hint、lost chunk priority |
+| [tests/cpp/receiver_components_test.cpp](tests/cpp/receiver_components_test.cpp) | ReceiverCoordinator、SPSC writer、commit/append 错误 |
+| [tests/cpp/fault_client.cpp](tests/cpp/fault_client.cpp) | wire 级坏消息客户端 |
 
-```text
-AsyncFrameConnection on_close/on_error
-SenderApp::on_line_unavailable()
-scheduler.on_line_disconnected()
-该 line 上未确认 chunk 重新标记为未发送
-schedule_reconnect()
-```
-
-重连成功后：
-
-```text
-Receiver 发送新的 MANIFEST
-Sender 重新 diff
-如果 Receiver 已有完整最终文件:
-  跳过
-如果 Receiver 有 incomplete chunk:
-  跳过 .meta 中已 checkpoint chunk
-  只发缺失 chunk
-如果 Receiver 只有较短最终文件:
-  append 续传
-```
-
-这就是“A 端不持久化同步状态”的核心。
-
-## 16. 文件系统写盘策略
-
-### append 文件
-
-```text
-DATA 到达
-ReceiverStream 写目标文件
-event loop 投递 fsync task
-DiskWriter fsync 文件
-event loop 收到完成
-durable_offset 前进
-```
-
-### chunk checkpoint
-
-```text
-CHUNK 到达
-写 .tmp
-received bitmap 更新
-定时或累计 4MB 后 checkpoint
-DiskWriter:
-  fsync .tmp
-  写 .meta.writing
-  fsync .meta.writing
-  rename .meta
-  fsync .yisync_tmp
-```
-
-### chunk commit
-
-```text
-FILE_COMMIT 到达
-event loop 轻量检查并入队
-DiskWriter:
-  CRC32C 整文件校验
-  最终 checkpoint
-  rename .tmp -> final file
-  fsync final file
-  fsync final parent directory
-  remove .meta
-  fsync .yisync_tmp
-event loop 推进 expected_order_seq
-```
-
-## 17. 安全约束和不变量
-
-这些规则不能随便破坏。
-
-### 路径安全
-
-所有来自网络的 `name` 都必须是安全相对路径：
+真实 A/B 集成测试：
 
-```text
-不能空
-不能是绝对路径
-不能包含 ..
-```
-
-否则 Receiver 可能写出 root 外。
-
-### 同 stream 顺序
-
-同一个 stream 内：
-
-```text
-append: expected_seq 必须严格前进
-chunk:  FILE_BEGIN/FILE_COMMIT 必须按 expected_order_seq
-```
-
-不同 stream 可以并行。
-
-### received 不等于 durable
-
-不要把 heartbeat `received_chunks` 当成掉电可恢复状态。
-
-真正可恢复的是：
+| scenario | 覆盖点 |
+| --- | --- |
+| `basic` | 真实目录、小文件、大文件、metrics |
+| `reconnect` | 多 line 断线重连、lost send |
+| `receiver-restart` | chunk 不持久恢复、`.yisync_tmp` 清理 |
+| `entries` | 目录、空目录、软链接 |
+| `multistream` | 多源目录、多 stream、regex 过滤 |
+| `limit` | 限速和背压路径 |
+| `recovery` | 重传失败后重新 Manifest1 / Manifest2 |
+| `final-failure` | 恢复次数耗尽后的最终失败 |
+| `faults` | `BadChecksum`、`BadCommit`、`SizeConflict` |
 
-```text
-MANIFEST.incomplete_chunks.received_chunks
-```
-
-它来自 `.meta`。
-
-### commit 完成前不能推进 next_seq
-
-`FILE_COMMIT` 入队后台 writer 后，不能立刻发完成 heartbeat。必须等：
-
-```text
-CRC32C OK
-rename OK
-fsync OK
-.meta cleanup OK
-```
-
-然后才能 `expected_order_seq += 1`。
+## 12. 关键不变量
 
-### 队列满不能假装成功
-
-DiskWriter 队列满时，如果继续推进内存状态，会造成：
-
-```text
-内存认为 checkpoint/commit 已完成
-磁盘其实没有持久化
-进程重启后状态丢失
-```
+这些规则如果被破坏，后面的恢复和顺序语义都会出问题：
 
-所以当前 fail-fast。
+1. `Manifest1` 只表达 Sender 当前源目录，不表达传输进度。
+2. `Manifest2` 只表达 Receiver 根据最终目录算出的起点。
+3. Sender 不持久化进度。
+4. Receiver 不用 `.yisync_tmp` 做重启恢复。
+5. 同一个 stream 内 `seq` 必须严格推进。
+6. `CREATE` 语义固定为目标路径必须不存在。
+7. `DATA.offset` 必须等于 Receiver 当前文件大小。
+8. chunk 可以乱序写 `.tmp`，但 `FILE_COMMIT` 必须等所有 chunk 到齐。
+9. `HEARTBEAT.received_chunks` 是当前进程内批量 ACK，不是掉电级持久化证明。
+10. `NACK` 先查发送缓冲重发，发送缓冲 miss 后才进入 Manifest 恢复。
+11. 所有重发仍必须走 scheduler 的限速和背压。
+12. 配置修改必须重启进程才生效。
 
-## 18. 当前已经完成
+## 13. 当前边界
 
-功能上已经有：
+已经支持：
 
-- wire 协议原型。
-- 协议瘦身。
-- CRC32C。
-- manifest scan/diff。
-- 真实 `--source-root` reader。
-- 目录、子目录、空目录、软链接同步。
-- 小文件 `CREATE/DATA`。
-- append 续传。
-- 大文件 `FILE_BEGIN/CHUNK/FILE_COMMIT`。
-- chunk 乱序接收。
-- chunk missing hint。
-- chunk checkpoint 和重启恢复。
-- sender 消费 `MANIFEST.incomplete_chunks`。
-- 多 stream。
+- 独立 Sender / Receiver 进程。
 - 多 TCP line。
-- token bucket 限速和 recv window 背压。
-- TCP line 自动重连。
-- 后台 SPSC DiskWriter。
-- append fsync 后 durable_offset 推进。
-- chunk commit 后台化。
+- Hello negotiation。
+- Manifest1 / Manifest2。
+- 多目录、多 stream。
+- regex 过滤。
+- 目录、空目录、普通文件、软链接。
+- 小文件和 append。
+- 大文件 chunk。
+- chunk 乱序接收。
+- HEARTBEAT 批量 ACK。
+- NACK 缓冲重发。
+- 动态 RTO。
+- Manifest 恢复。
+- 后台 disk writer。
+- watch 长期运行。
 
-## 19. 当前还没做
+还没做或明确暂不做：
 
-### 配置
-
-还没有配置文件。现在大部分参数来自命令行或常量：
-
-```text
-kLineBudgetBytes
-kLineWindowBytes
-kReceiverCheckpointInterval
-kReceiverHeartbeatInterval
-kReceiverCommitPollInterval
-kDiskWriterQueueCapacity
-```
-
-### watcher
-
-只有 polling fallback，没接：
-
-- Linux inotify。
-- macOS FSEvents。
-- 长期运行时新增文件 / append 事件进入发送队列。
-
-### DiskWriter 指标和背压
-
-还没统计：
-
-- 队列深度。
-- 排队延迟。
-- fsync 延迟。
-- commit CRC32C 耗时。
-- rename / fsync 耗时。
-
-队列满现在是 fail-fast，后续应该接 scheduler 背压或降速。
-
-### 重传策略
-
-已有：
-
-- missing hint。
-- line 断开后 chunk 重排。
-- 基础 RTO。
-
-还缺：
-
-- RTT 动态 RTO。
-- NACK 后自动重新拉 MANIFEST。
-- NACK 后自动 re-diff。
-- BadChecksum / BadCommit / SizeConflict 的恢复策略。
-- 重传次数上限。
-
-### QoS
-
-还没做：
-
-- 控制消息优先。
-- 小文件优先。
-- 重传优先。
-- stream 权重。
-- 与 scheduler 的 token/window/inflight 策略统一。
-
-### UDP / QUIC
-
-接口有预留，但没有实现：
-
-- UDP adapter。
-- QUIC stream/datagram adapter。
-- UDP/QUIC 下 frame 边界和重传责任。
-
-### 压缩和更多校验
-
-还没做：
-
-- LZ4。
-- Zstd。
-- MD5。
-- 压缩前后校验策略。
-
-### 非 append 语义
-
-还没做：
-
-- 删除。
-- 重命名。
-- 原地修改。
-- 已存在目录树结构变更 diff。
-- 软链接 target 变化后的更新策略。
-- rsync delta。
-
-## 20. 建议读代码顺序
-
-如果完全不熟，建议按这个顺序读：
-
-1. [include/yisync_protocol.hpp](include/yisync_protocol.hpp)
-
-   先看所有线上消息长什么样。
-
-2. [src/yisync_protocol.cpp](src/yisync_protocol.cpp)
-
-   看 frame 和消息怎么编码解码。
-
-3. [include/yisync_sync.hpp](include/yisync_sync.hpp) 和 [src/yisync_sync.cpp](src/yisync_sync.cpp)
-
-   看 manifest 怎么扫描、diff 怎么判断从哪里传。
-
-4. [include/yisync_receiver.hpp](include/yisync_receiver.hpp) 和 [src/yisync_receiver.cpp](src/yisync_receiver.cpp)
-
-   看 Receiver 如何应用 CREATE/DATA/CHUNK/COMMIT。
-
-5. [include/yisync_scheduler.hpp](include/yisync_scheduler.hpp) 和 [src/yisync_scheduler.cpp](src/yisync_scheduler.cpp)
-
-   看限速、窗口和线路评分。
-
-6. [include/yisync_async.hpp](include/yisync_async.hpp) 和 [src/yisync_async.cpp](src/yisync_async.cpp)
-
-   看 event loop 和异步 TCP。
-
-7. [src/yisync_receiver_app.cpp](src/yisync_receiver_app.cpp)
-
-   看 B 端如何把协议、receiver 状态机、disk writer 和 heartbeat 拼起来。
-
-8. [src/yisync_sender_app.cpp](src/yisync_sender_app.cpp)
-
-   看 A 端如何构造发送计划、处理 MANIFEST、调度 chunk、处理 heartbeat 和断线。
-
-9. [src/main.cpp](src/main.cpp)
-
-   看单进程 demo 里各个模块如何被测试。
-
-## 21. 后续重构优先级
-
-当前最应该先拆 SenderApp。
-
-原因：
-
-```text
-配置解析会影响 sender plan
-watcher 会影响 sender plan
-QoS 会影响 sender send queue
-重传策略会影响 sender chunk state
-```
-
-如果不先拆，后面功能继续加进去会越来越难维护。
-
-建议拆法：
-
-1. 拆 `FileSendTask` / `StreamSendState` 到 sender plan 模块。
-2. 拆 manifest diff -> task list。
-3. 拆 chunk resend / missing hint 状态。
-4. 把真实文件读取和模拟数据读取收敛到 reader 接口。
-5. 再拆 ReceiverApp 里的 DiskWriter、HeartbeatAggregator、StreamReceiverMap。
+- 完整 QoS 优先级队列。
+- UDP / QUIC / AREON adapter。
+- LZ4 / Zstd / MD5 实现。
+- append 大剩余量切 chunk commit 语义。
+- disk writer 队列满后的背压联动。
+- 删除、重命名、原地修改、rsync delta。
+- 配置热更新。
+- chunk 掉电级持久恢复。
