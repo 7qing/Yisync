@@ -4,7 +4,7 @@
 
 namespace yisync::node {
 
-int run_sender(NodeOptions options);
-int run_receiver(NodeOptions options);
+int run_sender(T_NodeOptions options);
+int run_receiver(T_NodeOptions options);
 
 }  // namespace yisync::node

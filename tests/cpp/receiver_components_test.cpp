@@ -51,38 +51,38 @@ yisync::Bytes bytes(std::string_view text) {
   return out;
 }
 
-yisync::Data data_from_payload(std::uint64_t stream_id,
+yisync::T_Data data_from_payload(std::uint64_t stream_id,
                                std::uint64_t file_id,
                                std::uint64_t seq,
                                std::uint64_t offset,
                                std::uint64_t final_size,
                                yisync::Bytes payload) {
-  return yisync::Data{
+  return yisync::T_Data{
       .stream_id = stream_id,
       .seq = seq,
       .file_id = file_id,
       .offset = offset,
       .final_size = final_size,
       .raw_len = static_cast<std::uint32_t>(payload.size()),
-      .checksum_algo = yisync::ChecksumAlgo::Crc32c,
+      .checksum_algo = yisync::EM_ChecksumAlgo::CRC32C,
       .checksum = yisync::crc32c_bytes(payload),
       .payload = std::move(payload),
   };
 }
 
-yisync::Chunk chunk_from_payload(std::uint64_t stream_id,
+yisync::T_Chunk chunk_from_payload(std::uint64_t stream_id,
                                  std::uint64_t file_id,
                                  std::uint64_t seq,
                                  std::uint64_t chunk_index,
                                  yisync::Bytes payload) {
-  return yisync::Chunk{
+  return yisync::T_Chunk{
       .stream_id = stream_id,
       .seq = seq,
       .file_id = file_id,
       .chunk_index = chunk_index,
       .offset = chunk_index * yisync::kDefaultChunkSizeBytes,
       .raw_len = static_cast<std::uint32_t>(payload.size()),
-      .checksum_algo = yisync::ChecksumAlgo::Crc32c,
+      .checksum_algo = yisync::EM_ChecksumAlgo::CRC32C,
       .checksum = yisync::crc32c_bytes(payload),
       .payload = std::move(payload),
   };
@@ -132,15 +132,15 @@ TEST(ReceiverCoordinatorTest, AppliesCreateDataAndReportsChecksumNack) {
   TempDir tmp;
   std::unordered_map<std::uint64_t, std::filesystem::path> roots;
   roots[9001] = tmp.path();
-  yisync::ReceiverStreamMap streams(9001, tmp.path(), &roots);
+  yisync::T_ReceiverStreamMap streams(9001, tmp.path(), &roots);
   yisync::SpscDiskWriter writer;
-  yisync::ReceiverCoordinator coordinator(streams, writer, 256 * 1024, 8);
+  yisync::T_ReceiverCoordinator coordinator(streams, writer, 256 * 1024, 8);
 
-  const auto create_actions = coordinator.apply_create(1, yisync::Create{
+  const auto create_actions = coordinator.apply_create(1, yisync::T_Create{
       .stream_id = 9001,
       .seq = 1,
       .file_id = 10,
-      .kind = yisync::EntryKind::RegularFile,
+      .kind = yisync::EM_EntryKind::REGULAR_FILE,
       .name = "file.txt",
       .final_size = 5,
   });
@@ -151,7 +151,7 @@ TEST(ReceiverCoordinatorTest, AppliesCreateDataAndReportsChecksumNack) {
   bad.checksum = yisync::Bytes{std::byte{0}, std::byte{0}, std::byte{0}, std::byte{0}};
   const auto bad_actions = coordinator.apply_data(1, bad);
   ASSERT_FALSE(bad_actions.nacks.empty());
-  EXPECT_EQ(bad_actions.nacks.front().nack.reason, yisync::NackReason::BadChecksum);
+  EXPECT_EQ(bad_actions.nacks.front().nack.reason, yisync::EM_NackReason::BAD_CHECKSUM);
 
   auto data = data_from_payload(9001, 10, 1, 0, 5, bytes("hello"));
   const auto data_actions = coordinator.apply_data(1, data);
@@ -170,43 +170,43 @@ TEST(ReceiverCoordinatorTest, ReportsSizeConflict) {
   TempDir tmp;
   std::unordered_map<std::uint64_t, std::filesystem::path> roots;
   roots[9001] = tmp.path();
-  yisync::ReceiverStreamMap streams(9001, tmp.path(), &roots);
+  yisync::T_ReceiverStreamMap streams(9001, tmp.path(), &roots);
   yisync::SpscDiskWriter writer;
-  yisync::ReceiverCoordinator coordinator(streams, writer, 256 * 1024, 8);
+  yisync::T_ReceiverCoordinator coordinator(streams, writer, 256 * 1024, 8);
 
-  ASSERT_TRUE(coordinator.apply_create(1, yisync::Create{
+  ASSERT_TRUE(coordinator.apply_create(1, yisync::T_Create{
       .stream_id = 9001,
       .seq = 1,
       .file_id = 10,
-      .kind = yisync::EntryKind::RegularFile,
+      .kind = yisync::EM_EntryKind::REGULAR_FILE,
       .name = "size.txt",
       .final_size = 5,
   }).nacks.empty());
 
   const auto actions = coordinator.apply_data(1, data_from_payload(9001, 10, 1, 0, 6, bytes("hello")));
   ASSERT_FALSE(actions.nacks.empty());
-  EXPECT_EQ(actions.nacks.front().nack.reason, yisync::NackReason::SizeConflict);
+  EXPECT_EQ(actions.nacks.front().nack.reason, yisync::EM_NackReason::SIZE_CONFLICT);
 }
 
 TEST(ReceiverCoordinatorTest, CommitsChunkFileThroughWriter) {
   TempDir tmp;
   std::unordered_map<std::uint64_t, std::filesystem::path> roots;
   roots[9001] = tmp.path();
-  yisync::ReceiverStreamMap streams(9001, tmp.path(), &roots);
+  yisync::T_ReceiverStreamMap streams(9001, tmp.path(), &roots);
   yisync::SpscDiskWriter writer;
-  yisync::ReceiverCoordinator coordinator(streams, writer, 256 * 1024, 8);
+  yisync::T_ReceiverCoordinator coordinator(streams, writer, 256 * 1024, 8);
 
   yisync::Bytes payload(yisync::kDefaultChunkSizeBytes + 1);
   for (std::size_t i = 0; i < payload.size(); ++i) {
     payload[i] = static_cast<std::byte>('A' + (i % 26));
   }
-  const yisync::FileChecksum full_checksum{
-      .algo = yisync::ChecksumAlgo::Crc32c,
+  const yisync::T_FileChecksum full_checksum{
+      .algo = yisync::EM_ChecksumAlgo::CRC32C,
       .offset = 0,
       .len = static_cast<std::uint64_t>(payload.size()),
       .value = yisync::crc32c_bytes(payload),
   };
-  const auto begin_actions = coordinator.apply_begin(1, yisync::FileBegin{
+  const auto begin_actions = coordinator.apply_begin(1, yisync::T_FileBegin{
       .stream_id = 9001,
       .seq = 1,
       .file_id = 20,
@@ -225,7 +225,7 @@ TEST(ReceiverCoordinatorTest, CommitsChunkFileThroughWriter) {
   EXPECT_TRUE(coordinator.apply_chunk(1, chunk_from_payload(9001, 20, 1, 1, chunk1)).nacks.empty());
   EXPECT_TRUE(coordinator.apply_chunk(1, chunk_from_payload(9001, 20, 1, 0, chunk0)).nacks.empty());
 
-  const auto commit_actions = coordinator.apply_commit(1, yisync::FileCommit{
+  const auto commit_actions = coordinator.apply_commit(1, yisync::T_FileCommit{
       .stream_id = 9001,
       .seq = 1,
       .file_id = 20,
@@ -245,20 +245,20 @@ TEST(ReceiverCoordinatorTest, ReportsBadCommitWhenChunkMissing) {
   TempDir tmp;
   std::unordered_map<std::uint64_t, std::filesystem::path> roots;
   roots[9001] = tmp.path();
-  yisync::ReceiverStreamMap streams(9001, tmp.path(), &roots);
+  yisync::T_ReceiverStreamMap streams(9001, tmp.path(), &roots);
   yisync::SpscDiskWriter writer;
-  yisync::ReceiverCoordinator coordinator(streams, writer, 256 * 1024, 8);
+  yisync::T_ReceiverCoordinator coordinator(streams, writer, 256 * 1024, 8);
 
   yisync::Bytes payload(yisync::kDefaultChunkSizeBytes + 1);
   std::fill(payload.begin(), payload.end(), std::byte{'x'});
-  const yisync::FileChecksum full_checksum{
-      .algo = yisync::ChecksumAlgo::Crc32c,
+  const yisync::T_FileChecksum full_checksum{
+      .algo = yisync::EM_ChecksumAlgo::CRC32C,
       .offset = 0,
       .len = static_cast<std::uint64_t>(payload.size()),
       .value = yisync::crc32c_bytes(payload),
   };
 
-  ASSERT_TRUE(coordinator.apply_begin(1, yisync::FileBegin{
+  ASSERT_TRUE(coordinator.apply_begin(1, yisync::T_FileBegin{
       .stream_id = 9001,
       .seq = 1,
       .file_id = 30,
@@ -273,35 +273,35 @@ TEST(ReceiverCoordinatorTest, ReportsBadCommitWhenChunkMissing) {
                        payload.begin() + static_cast<std::ptrdiff_t>(yisync::kDefaultChunkSizeBytes));
   ASSERT_TRUE(coordinator.apply_chunk(1, chunk_from_payload(9001, 30, 1, 0, chunk0)).nacks.empty());
 
-  const auto actions = coordinator.apply_commit(1, yisync::FileCommit{
+  const auto actions = coordinator.apply_commit(1, yisync::T_FileCommit{
       .stream_id = 9001,
       .seq = 1,
       .file_id = 30,
   });
   ASSERT_FALSE(actions.nacks.empty());
-  EXPECT_EQ(actions.nacks.front().nack.reason, yisync::NackReason::BadCommit);
+  EXPECT_EQ(actions.nacks.front().nack.reason, yisync::EM_NackReason::BAD_COMMIT);
 }
 
 TEST(ReceiverCoordinatorTest, ReportsChunkCommitChecksumFailureFromWriter) {
   TempDir tmp;
   std::unordered_map<std::uint64_t, std::filesystem::path> roots;
   roots[9001] = tmp.path();
-  yisync::ReceiverStreamMap streams(9001, tmp.path(), &roots);
+  yisync::T_ReceiverStreamMap streams(9001, tmp.path(), &roots);
   yisync::SpscDiskWriter writer;
-  yisync::ReceiverCoordinator coordinator(streams, writer, 256 * 1024, 8);
+  yisync::T_ReceiverCoordinator coordinator(streams, writer, 256 * 1024, 8);
 
   yisync::Bytes payload(yisync::kDefaultChunkSizeBytes + 1);
   std::fill(payload.begin(), payload.end(), std::byte{'q'});
   yisync::Bytes wrong_checksum_payload = payload;
   wrong_checksum_payload[0] = std::byte{'z'};
-  const yisync::FileChecksum wrong_full_checksum{
-      .algo = yisync::ChecksumAlgo::Crc32c,
+  const yisync::T_FileChecksum wrong_full_checksum{
+      .algo = yisync::EM_ChecksumAlgo::CRC32C,
       .offset = 0,
       .len = static_cast<std::uint64_t>(payload.size()),
       .value = yisync::crc32c_bytes(wrong_checksum_payload),
   };
 
-  ASSERT_TRUE(coordinator.apply_begin(1, yisync::FileBegin{
+  ASSERT_TRUE(coordinator.apply_begin(1, yisync::T_FileBegin{
       .stream_id = 9001,
       .seq = 1,
       .file_id = 40,
@@ -319,7 +319,7 @@ TEST(ReceiverCoordinatorTest, ReportsChunkCommitChecksumFailureFromWriter) {
   ASSERT_TRUE(coordinator.apply_chunk(1, chunk_from_payload(9001, 40, 1, 0, chunk0)).nacks.empty());
   ASSERT_TRUE(coordinator.apply_chunk(1, chunk_from_payload(9001, 40, 1, 1, chunk1)).nacks.empty());
 
-  const auto commit_actions = coordinator.apply_commit(1, yisync::FileCommit{
+  const auto commit_actions = coordinator.apply_commit(1, yisync::T_FileCommit{
       .stream_id = 9001,
       .seq = 1,
       .file_id = 40,
@@ -330,16 +330,16 @@ TEST(ReceiverCoordinatorTest, ReportsChunkCommitChecksumFailureFromWriter) {
   const auto completed = coordinator.poll_completions();
   EXPECT_TRUE(completed.failed);
   ASSERT_FALSE(completed.nacks.empty());
-  EXPECT_EQ(completed.nacks.front().nack.reason, yisync::NackReason::ChecksumMismatch);
+  EXPECT_EQ(completed.nacks.front().nack.reason, yisync::EM_NackReason::CHECKSUM_MISMATCH);
 }
 
 TEST(ReceiverCoordinatorTest, ReportsAppendFsyncFailure) {
   TempDir tmp;
   std::unordered_map<std::uint64_t, std::filesystem::path> roots;
   roots[9001] = tmp.path();
-  yisync::ReceiverStreamMap streams(9001, tmp.path(), &roots);
+  yisync::T_ReceiverStreamMap streams(9001, tmp.path(), &roots);
   yisync::SpscDiskWriter writer;
-  yisync::ReceiverCoordinator coordinator(streams, writer, 256 * 1024, 8);
+  yisync::T_ReceiverCoordinator coordinator(streams, writer, 256 * 1024, 8);
   std::atomic<bool> release_writer{false};
   ASSERT_TRUE(writer.enqueue([&] {
     while (!release_writer.load(std::memory_order_acquire)) {
@@ -348,11 +348,11 @@ TEST(ReceiverCoordinatorTest, ReportsAppendFsyncFailure) {
   }));
   std::this_thread::sleep_for(std::chrono::milliseconds(10));
 
-  ASSERT_TRUE(coordinator.apply_create(1, yisync::Create{
+  ASSERT_TRUE(coordinator.apply_create(1, yisync::T_Create{
       .stream_id = 9001,
       .seq = 1,
       .file_id = 50,
-      .kind = yisync::EntryKind::RegularFile,
+      .kind = yisync::EM_EntryKind::REGULAR_FILE,
       .name = "append.txt",
       .final_size = 5,
   }).nacks.empty());

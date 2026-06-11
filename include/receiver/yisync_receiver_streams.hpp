@@ -13,17 +13,17 @@
 
 namespace yisync {
 
-struct ChunkCommitCompletion {
+struct T_ChunkCommitCompletion {
   std::atomic<bool> completed{false};
   std::atomic<bool> failed{false};
   std::array<char, 160> error{};
 };
 
-struct ReceiverStreamContext {
+struct T_ReceiverStreamContext {
   std::uint64_t stream_id = 0;
   std::filesystem::path root;
-  std::unique_ptr<ReceiverStream> append;
-  std::unique_ptr<ChunkedReceiverStream> chunk;
+  std::unique_ptr<T_ReceiverStream> append;
+  std::unique_ptr<T_ChunkedReceiverStream> chunk;
   std::uint64_t append_durable_file_id = 0;
   std::filesystem::path append_durable_path;
   std::uint64_t append_durable_offset = 0;
@@ -40,29 +40,29 @@ struct ReceiverStreamContext {
   std::uint64_t chunk_commit_file_id = 0;
   std::uint64_t chunk_commit_final_size = 0;
   std::filesystem::path chunk_commit_final_path;
-  std::shared_ptr<ChunkCommitCompletion> chunk_commit_completion;
+  std::shared_ptr<T_ChunkCommitCompletion> chunk_commit_completion;
 
-  ReceiverStreamContext() = default;
-  ReceiverStreamContext(const ReceiverStreamContext&) = delete;
-  ReceiverStreamContext& operator=(const ReceiverStreamContext&) = delete;
-  ReceiverStreamContext(ReceiverStreamContext&& other) noexcept;
-  ReceiverStreamContext& operator=(ReceiverStreamContext&& other) noexcept;
+  T_ReceiverStreamContext() = default;
+  T_ReceiverStreamContext(const T_ReceiverStreamContext&) = delete;
+  T_ReceiverStreamContext& operator=(const T_ReceiverStreamContext&) = delete;
+  T_ReceiverStreamContext(T_ReceiverStreamContext&& other) noexcept;
+  T_ReceiverStreamContext& operator=(T_ReceiverStreamContext&& other) noexcept;
 };
 
-class ReceiverStreamMap {
+class T_ReceiverStreamMap {
  public:
-  using Map = std::unordered_map<std::uint64_t, ReceiverStreamContext>;
+  using Map = std::unordered_map<std::uint64_t, T_ReceiverStreamContext>;
   using iterator = Map::iterator;
   using const_iterator = Map::const_iterator;
 
-  ReceiverStreamMap(std::uint64_t default_stream_id,
+  T_ReceiverStreamMap(std::uint64_t default_stream_id,
                     std::filesystem::path default_root,
                     std::unordered_map<std::uint64_t, std::filesystem::path>* roots);
 
   std::filesystem::path stream_root_for(std::uint64_t stream_id) const;
-  ReceiverStreamContext& context_for(std::uint64_t stream_id);
-  ReceiverStream& append_receiver_for(std::uint64_t stream_id);
-  ChunkedReceiverStream& chunk_receiver_for(std::uint64_t stream_id);
+  T_ReceiverStreamContext& context_for(std::uint64_t stream_id);
+  T_ReceiverStream& append_receiver_for(std::uint64_t stream_id);
+  T_ChunkedReceiverStream& chunk_receiver_for(std::uint64_t stream_id);
   bool append_durable_idle() const;
   bool has_pending_chunk_commit() const;
 

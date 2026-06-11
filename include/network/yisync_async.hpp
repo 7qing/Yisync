@@ -51,7 +51,7 @@ class EventLoop {
 
 class AsyncFrameConnection : public std::enable_shared_from_this<AsyncFrameConnection> {
  public:
-  using MessageCallback = std::function<void(Message)>;
+  using MessageCallback = std::function<void(T_Message)>;
   using CloseCallback = std::function<void()>;
   using ErrorCallback = std::function<void(std::string)>;
 
@@ -64,7 +64,7 @@ class AsyncFrameConnection : public std::enable_shared_from_this<AsyncFrameConne
   int fd() const noexcept;
   bool closed() const noexcept;
   void start(EventLoop& loop);
-  void send(const Message& message);
+  void send(const T_Message& message);
   void close();
 
   void on_message(MessageCallback callback);

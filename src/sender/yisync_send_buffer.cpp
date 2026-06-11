@@ -6,7 +6,7 @@
 
 namespace yisync {
 
-std::size_t SendBufferKeyHash::operator()(const SendBufferKey& key) const noexcept {
+std::size_t T_SendBufferKeyHash::operator()(const T_SendBufferKey& key) const noexcept {
   std::size_t hash = static_cast<std::size_t>(key.kind);
   const auto mix = [&hash](std::uint64_t value) {
     hash ^= std::hash<std::uint64_t>{}(value) + 0x9e3779b97f4a7c15ULL + (hash << 6) + (hash >> 2);
@@ -19,8 +19,8 @@ std::size_t SendBufferKeyHash::operator()(const SendBufferKey& key) const noexce
   return hash;
 }
 
-SendBufferKey SenderSendBuffer::key_for_request(const SendRequest& request) {
-  return SendBufferKey{
+T_SendBufferKey T_SenderSendBuffer::key_for_request(const T_SendRequest& request) {
+  return T_SendBufferKey{
       .kind = request.kind,
       .stream_id = request.stream_id,
       .file_id = request.file_id,
@@ -30,8 +30,8 @@ SendBufferKey SenderSendBuffer::key_for_request(const SendRequest& request) {
   };
 }
 
-SendBufferKey SenderSendBuffer::key_for_lost_send(const LostSend& lost) {
-  return SendBufferKey{
+T_SendBufferKey T_SenderSendBuffer::key_for_lost_send(const T_LostSend& lost) {
+  return T_SendBufferKey{
       .kind = lost.kind,
       .stream_id = lost.stream_id,
       .file_id = lost.file_id,
@@ -41,13 +41,13 @@ SendBufferKey SenderSendBuffer::key_for_lost_send(const LostSend& lost) {
   };
 }
 
-void SenderSendBuffer::clear() {
+void T_SenderSendBuffer::clear() {
   entries_.clear();
   retransmit_queue_.clear();
 }
 
-void SenderSendBuffer::remember(Message message, SendRequest request, std::uint64_t sent_tick) {
-  entries_[key_for_request(request)] = BufferedSend{
+void T_SenderSendBuffer::remember(T_Message message, T_SendRequest request, std::uint64_t sent_tick) {
+  entries_[key_for_request(request)] = T_BufferedSend{
       .message = std::move(message),
       .request = std::move(request),
       .last_sent_tick = sent_tick,
@@ -55,9 +55,9 @@ void SenderSendBuffer::remember(Message message, SendRequest request, std::uint6
   };
 }
 
-std::vector<AckedSendSample> SenderSendBuffer::erase_completed(const Heartbeat& heartbeat,
+std::vector<T_AckedSendSample> T_SenderSendBuffer::erase_completed(const T_Heartbeat& heartbeat,
                                                                std::uint64_t current_tick) {
-  std::vector<AckedSendSample> samples;
+  std::vector<T_AckedSendSample> samples;
   const auto stream_id = heartbeat.stream_id;
   const auto next_seq = heartbeat.next_seq;
   if (next_seq == 0) {
@@ -68,7 +68,7 @@ std::vector<AckedSendSample> SenderSendBuffer::erase_completed(const Heartbeat& 
     const bool same_stream_file = key.stream_id == stream_id &&
                                   key.file_id == heartbeat.file_id;
     bool acked = key.stream_id == stream_id && key.seq < next_seq;
-    if (!acked && same_stream_file && key.kind == SendKind::Data) {
+    if (!acked && same_stream_file && key.kind == EM_SendKind::DATA) {
       const auto end_offset = it->second.request.end_offset;
       acked = end_offset != 0 &&
               (heartbeat.offset >= end_offset || heartbeat.durable_offset >= end_offset);
@@ -83,12 +83,12 @@ std::vector<AckedSendSample> SenderSendBuffer::erase_completed(const Heartbeat& 
   return samples;
 }
 
-std::optional<AckedSendSample> SenderSendBuffer::erase_file_begin(std::uint64_t stream_id,
+std::optional<T_AckedSendSample> T_SenderSendBuffer::erase_file_begin(std::uint64_t stream_id,
                                                                   std::uint64_t file_id,
                                                                   std::uint64_t seq,
                                                                   std::uint64_t current_tick) {
-  const SendBufferKey key{
-      .kind = SendKind::FileBegin,
+  const T_SendBufferKey key{
+      .kind = EM_SendKind::FILE_BEGIN,
       .stream_id = stream_id,
       .file_id = file_id,
       .seq = seq,
@@ -104,11 +104,11 @@ std::optional<AckedSendSample> SenderSendBuffer::erase_file_begin(std::uint64_t 
   return sample;
 }
 
-std::optional<AckedSendSample> SenderSendBuffer::erase_chunk(const ReceivedChunk& chunk,
+std::optional<T_AckedSendSample> T_SenderSendBuffer::erase_chunk(const T_ReceivedChunk& chunk,
                                                             std::uint64_t stream_id,
                                                             std::uint64_t current_tick) {
-  const SendBufferKey key{
-      .kind = SendKind::Chunk,
+  const T_SendBufferKey key{
+      .kind = EM_SendKind::CHUNK,
       .stream_id = stream_id,
       .file_id = chunk.file_id,
       .seq = chunk.seq,
@@ -124,18 +124,18 @@ std::optional<AckedSendSample> SenderSendBuffer::erase_chunk(const ReceivedChunk
   return sample;
 }
 
-std::optional<SendBufferKey> SenderSendBuffer::key_for_nack(const Nack& nack,
+std::optional<T_SendBufferKey> T_SenderSendBuffer::key_for_nack(const T_Nack& nack,
                                                             std::uint64_t chunk_size) const {
   if (nack.file_id == 0) {
     return std::nullopt;
   }
 
-  const auto find_ordered = [&](std::uint64_t seq) -> std::optional<SendBufferKey> {
+  const auto find_ordered = [&](std::uint64_t seq) -> std::optional<T_SendBufferKey> {
     if (seq == 0) {
       return std::nullopt;
     }
-    auto create = SendBufferKey{
-        .kind = SendKind::Create,
+    auto create = T_SendBufferKey{
+        .kind = EM_SendKind::CREATE,
         .stream_id = nack.stream_id,
         .file_id = nack.file_id,
         .seq = seq,
@@ -146,7 +146,7 @@ std::optional<SendBufferKey> SenderSendBuffer::key_for_nack(const Nack& nack,
       return create;
     }
     auto data = create;
-    data.kind = SendKind::Data;
+    data.kind = EM_SendKind::DATA;
     data.offset = nack.offset;
     if (entries_.find(data) != entries_.end()) {
       return data;
@@ -154,12 +154,12 @@ std::optional<SendBufferKey> SenderSendBuffer::key_for_nack(const Nack& nack,
     return std::nullopt;
   };
 
-  const auto find_file_begin = [&](std::uint64_t seq) -> std::optional<SendBufferKey> {
+  const auto find_file_begin = [&](std::uint64_t seq) -> std::optional<T_SendBufferKey> {
     if (seq == 0) {
       return std::nullopt;
     }
-    auto begin = SendBufferKey{
-        .kind = SendKind::FileBegin,
+    auto begin = T_SendBufferKey{
+        .kind = EM_SendKind::FILE_BEGIN,
         .stream_id = nack.stream_id,
         .file_id = nack.file_id,
         .seq = seq,
@@ -172,12 +172,12 @@ std::optional<SendBufferKey> SenderSendBuffer::key_for_nack(const Nack& nack,
     return std::nullopt;
   };
 
-  const auto find_file_commit = [&](std::uint64_t seq) -> std::optional<SendBufferKey> {
+  const auto find_file_commit = [&](std::uint64_t seq) -> std::optional<T_SendBufferKey> {
     if (seq == 0) {
       return std::nullopt;
     }
-    auto commit = SendBufferKey{
-        .kind = SendKind::FileCommit,
+    auto commit = T_SendBufferKey{
+        .kind = EM_SendKind::FILE_COMMIT,
         .stream_id = nack.stream_id,
         .file_id = nack.file_id,
         .seq = seq,
@@ -190,13 +190,13 @@ std::optional<SendBufferKey> SenderSendBuffer::key_for_nack(const Nack& nack,
     return std::nullopt;
   };
 
-  const auto find_chunk = [&](std::uint64_t seq) -> std::optional<SendBufferKey> {
+  const auto find_chunk = [&](std::uint64_t seq) -> std::optional<T_SendBufferKey> {
     if (seq == 0) {
       return std::nullopt;
     }
     const auto chunk_index = chunk_size == 0 ? 0 : nack.offset / chunk_size;
-    auto chunk = SendBufferKey{
-        .kind = SendKind::Chunk,
+    auto chunk = T_SendBufferKey{
+        .kind = EM_SendKind::CHUNK,
         .stream_id = nack.stream_id,
         .file_id = nack.file_id,
         .seq = seq,
@@ -209,7 +209,7 @@ std::optional<SendBufferKey> SenderSendBuffer::key_for_nack(const Nack& nack,
     return std::nullopt;
   };
 
-  if (nack.reason == NackReason::BadSeq) {
+  if (nack.reason == EM_NackReason::BAD_SEQ) {
     if (auto key = find_ordered(nack.expected_seq)) {
       return key;
     }
@@ -224,8 +224,8 @@ std::optional<SendBufferKey> SenderSendBuffer::key_for_nack(const Nack& nack,
     }
   }
 
-  if (nack.reason == NackReason::BadChecksum ||
-      nack.reason == NackReason::BadOffset) {
+  if (nack.reason == EM_NackReason::BAD_CHECKSUM ||
+      nack.reason == EM_NackReason::BAD_OFFSET) {
     if (auto key = find_chunk(nack.got_seq)) {
       return key;
     }
@@ -234,7 +234,7 @@ std::optional<SendBufferKey> SenderSendBuffer::key_for_nack(const Nack& nack,
     }
   }
 
-  if (nack.reason == NackReason::BadChunk) {
+  if (nack.reason == EM_NackReason::BAD_CHUNK) {
     if (auto key = find_file_begin(nack.got_seq)) {
       return key;
     }
@@ -243,14 +243,14 @@ std::optional<SendBufferKey> SenderSendBuffer::key_for_nack(const Nack& nack,
     }
   }
 
-  if (nack.reason == NackReason::BadCommit) {
+  if (nack.reason == EM_NackReason::BAD_COMMIT) {
     if (auto key = find_file_commit(nack.got_seq)) {
       return key;
     }
   }
 
-  auto ordered = SendBufferKey{
-      .kind = SendKind::Create,
+  auto ordered = T_SendBufferKey{
+      .kind = EM_SendKind::CREATE,
       .stream_id = nack.stream_id,
       .file_id = nack.file_id,
       .seq = nack.got_seq,
@@ -260,21 +260,21 @@ std::optional<SendBufferKey> SenderSendBuffer::key_for_nack(const Nack& nack,
   if (entries_.find(ordered) != entries_.end()) {
     return ordered;
   }
-  ordered.kind = SendKind::Data;
+  ordered.kind = EM_SendKind::DATA;
   ordered.offset = nack.offset;
   if (entries_.find(ordered) != entries_.end()) {
     return ordered;
   }
 
   auto begin = ordered;
-  begin.kind = SendKind::FileBegin;
+  begin.kind = EM_SendKind::FILE_BEGIN;
   begin.offset = 0;
   if (entries_.find(begin) != entries_.end()) {
     return begin;
   }
 
   auto commit = ordered;
-  commit.kind = SendKind::FileCommit;
+  commit.kind = EM_SendKind::FILE_COMMIT;
   commit.offset = 0;
   if (entries_.find(commit) != entries_.end()) {
     return commit;
@@ -283,7 +283,7 @@ std::optional<SendBufferKey> SenderSendBuffer::key_for_nack(const Nack& nack,
   if (nack.got_seq != 0) {
     const auto chunk_index = chunk_size == 0 ? 0 : nack.offset / chunk_size;
     auto chunk = ordered;
-    chunk.kind = SendKind::Chunk;
+    chunk.kind = EM_SendKind::CHUNK;
     chunk.offset = 0;
     chunk.chunk_index = chunk_index;
     if (entries_.find(chunk) != entries_.end()) {
@@ -294,7 +294,7 @@ std::optional<SendBufferKey> SenderSendBuffer::key_for_nack(const Nack& nack,
   return std::nullopt;
 }
 
-bool SenderSendBuffer::enqueue_retransmit(const SendBufferKey& key) {
+bool T_SenderSendBuffer::enqueue_retransmit(const T_SendBufferKey& key) {
   if (entries_.find(key) == entries_.end()) {
     return false;
   }
@@ -304,7 +304,7 @@ bool SenderSendBuffer::enqueue_retransmit(const SendBufferKey& key) {
   return true;
 }
 
-bool SenderSendBuffer::enqueue_nack_retransmit(const Nack& nack, std::uint64_t chunk_size) {
+bool T_SenderSendBuffer::enqueue_nack_retransmit(const T_Nack& nack, std::uint64_t chunk_size) {
   const auto key = key_for_nack(nack, chunk_size);
   if (!key.has_value()) {
     return false;
@@ -312,7 +312,7 @@ bool SenderSendBuffer::enqueue_nack_retransmit(const Nack& nack, std::uint64_t c
   return enqueue_retransmit(*key);
 }
 
-bool SenderSendBuffer::mark_retransmitted(const SendBufferKey& key,
+bool T_SenderSendBuffer::mark_retransmitted(const T_SendBufferKey& key,
                                           std::uint64_t bytes,
                                           std::uint64_t sent_tick) {
   auto* send = find(key);
@@ -325,20 +325,20 @@ bool SenderSendBuffer::mark_retransmitted(const SendBufferKey& key,
   return true;
 }
 
-BufferedSend* SenderSendBuffer::find(const SendBufferKey& key) {
+T_BufferedSend* T_SenderSendBuffer::find(const T_SendBufferKey& key) {
   auto it = entries_.find(key);
   return it == entries_.end() ? nullptr : &it->second;
 }
 
-const BufferedSend* SenderSendBuffer::find(const SendBufferKey& key) const {
+const T_BufferedSend* T_SenderSendBuffer::find(const T_SendBufferKey& key) const {
   auto it = entries_.find(key);
   return it == entries_.end() ? nullptr : &it->second;
 }
 
-std::vector<SendBufferKey> SenderSendBuffer::expired_keys(std::uint64_t current_tick,
+std::vector<T_SendBufferKey> T_SenderSendBuffer::expired_keys(std::uint64_t current_tick,
                                                           std::uint64_t rto_ticks,
                                                           std::size_t max_keys) const {
-  std::vector<SendBufferKey> result;
+  std::vector<T_SendBufferKey> result;
   if (rto_ticks == 0 || max_keys == 0) {
     return result;
   }
@@ -358,29 +358,29 @@ std::vector<SendBufferKey> SenderSendBuffer::expired_keys(std::uint64_t current_
   return result;
 }
 
-std::vector<SendBufferKey>& SenderSendBuffer::retransmit_queue() noexcept {
+std::vector<T_SendBufferKey>& T_SenderSendBuffer::retransmit_queue() noexcept {
   return retransmit_queue_;
 }
 
-void SenderSendBuffer::erase_retransmit(std::size_t index) {
+void T_SenderSendBuffer::erase_retransmit(std::size_t index) {
   if (index >= retransmit_queue_.size()) {
     return;
   }
   retransmit_queue_.erase(retransmit_queue_.begin() + static_cast<std::ptrdiff_t>(index));
 }
 
-std::size_t SenderSendBuffer::size() const noexcept {
+std::size_t T_SenderSendBuffer::size() const noexcept {
   return entries_.size();
 }
 
-std::size_t SenderSendBuffer::retransmit_queue_size() const noexcept {
+std::size_t T_SenderSendBuffer::retransmit_queue_size() const noexcept {
   return retransmit_queue_.size();
 }
 
-AckedSendSample SenderSendBuffer::sample_for(const SendBufferKey& key,
-                                             const BufferedSend& send,
+T_AckedSendSample T_SenderSendBuffer::sample_for(const T_SendBufferKey& key,
+                                             const T_BufferedSend& send,
                                              std::uint64_t current_tick) {
-  return AckedSendSample{
+  return T_AckedSendSample{
       .key = key,
       .request = send.request,
       .rtt_ticks = current_tick >= send.last_sent_tick ? current_tick - send.last_sent_tick : 0,

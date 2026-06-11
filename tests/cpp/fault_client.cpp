@@ -22,7 +22,7 @@
 namespace {
 
 constexpr std::uint64_t kStreamId = 9001;
-constexpr std::size_t kHeaderLen = yisync::MessageHeader::kHeaderLen;
+constexpr std::size_t kHeaderLen = yisync::T_MessageHeader::kHeaderLen;
 
 std::uint64_t parse_u64(std::string_view value, const char* name) {
   std::uint64_t out = 0;
@@ -80,7 +80,7 @@ std::uint32_t read_le32(const std::vector<std::byte>& bytes, std::size_t offset)
          (static_cast<std::uint32_t>(static_cast<std::uint8_t>(bytes[offset + 3])) << 24);
 }
 
-yisync::Message recv_message(int fd) {
+yisync::T_Message recv_message(int fd) {
   std::vector<std::byte> header;
   recv_exact(fd, header, kHeaderLen);
   const auto body_len = read_le32(header, 8);
@@ -121,24 +121,24 @@ yisync::Bytes bytes(std::string_view text) {
   return out;
 }
 
-yisync::Data make_data(std::uint64_t final_size, yisync::Bytes payload) {
-  return yisync::Data{
+yisync::T_Data make_data(std::uint64_t final_size, yisync::Bytes payload) {
+  return yisync::T_Data{
       .stream_id = kStreamId,
       .seq = 1,
       .file_id = 1,
       .offset = 0,
       .final_size = final_size,
       .raw_len = static_cast<std::uint32_t>(payload.size()),
-      .checksum_algo = yisync::ChecksumAlgo::Crc32c,
+      .checksum_algo = yisync::EM_ChecksumAlgo::CRC32C,
       .checksum = yisync::crc32c_bytes(payload),
       .payload = std::move(payload),
   };
 }
 
-void expect_nack_reason(int fd, yisync::NackReason expected) {
+void expect_nack_reason(int fd, yisync::EM_NackReason expected) {
   for (int i = 0; i < 16; ++i) {
     const auto message = recv_message(fd);
-    if (const auto* nack = std::get_if<yisync::Nack>(&message)) {
+    if (const auto* nack = std::get_if<yisync::T_Nack>(&message)) {
       if (nack->reason != expected) {
         throw std::runtime_error("unexpected NACK reason");
       }
@@ -148,9 +148,9 @@ void expect_nack_reason(int fd, yisync::NackReason expected) {
   throw std::runtime_error("did not receive NACK");
 }
 
-yisync::FileChecksum checksum_for(const yisync::Bytes& payload) {
-  return yisync::FileChecksum{
-      .algo = yisync::ChecksumAlgo::Crc32c,
+yisync::T_FileChecksum checksum_for(const yisync::Bytes& payload) {
+  return yisync::T_FileChecksum{
+      .algo = yisync::EM_ChecksumAlgo::CRC32C,
       .offset = 0,
       .len = static_cast<std::uint64_t>(payload.size()),
       .value = yisync::crc32c_bytes(payload),
@@ -158,28 +158,28 @@ yisync::FileChecksum checksum_for(const yisync::Bytes& payload) {
 }
 
 void send_hello_and_manifest(int fd) {
-  send_all(fd, yisync::encode_frame(yisync::Message{
-                   yisync::network::make_hello(yisync::Role::Sender,
+  send_all(fd, yisync::encode_frame(yisync::T_Message{
+                   yisync::network::make_hello(yisync::EM_Role::SENDER,
                                                 "fault-client",
                                                 yisync::kDefaultChunkSizeBytes,
                                                 256 * 1024)}));
   const auto hello = recv_message(fd);
-  if (!std::holds_alternative<yisync::Hello>(hello)) {
-    throw std::runtime_error("receiver did not return Hello");
+  if (!std::holds_alternative<yisync::T_Hello>(hello)) {
+    throw std::runtime_error("receiver did not return T_Hello");
   }
 
   const auto payload = bytes("hello");
-  const yisync::Manifest1 manifest{
+  const yisync::T_Manifest1 manifest{
       .manifest_id = 1,
       .streams = {
-          yisync::Manifest1Stream{
+          yisync::T_Manifest1Stream{
               .stream_id = kStreamId,
               .root = "/tmp/yisync_fault_source",
               .entries = {
-                  yisync::ManifestEntry{
+                  yisync::T_ManifestEntry{
                       .file_id = 1,
                       .seq = 1,
-                      .kind = yisync::EntryKind::RegularFile,
+                      .kind = yisync::EM_EntryKind::REGULAR_FILE,
                       .name = "fault.txt",
                       .size = 5,
                       .checksum = checksum_for(payload),
@@ -188,21 +188,21 @@ void send_hello_and_manifest(int fd) {
           },
       },
   };
-  send_all(fd, yisync::encode_frame(yisync::Message{manifest}));
+  send_all(fd, yisync::encode_frame(yisync::T_Message{manifest}));
   const auto manifest2 = recv_message(fd);
-  if (!std::holds_alternative<yisync::Manifest2>(manifest2)) {
-    throw std::runtime_error("receiver did not return Manifest2");
+  if (!std::holds_alternative<yisync::T_Manifest2>(manifest2)) {
+    throw std::runtime_error("receiver did not return T_Manifest2");
   }
 }
 
 void run_bad_checksum(int fd) {
   send_hello_and_manifest(fd);
-  send_all(fd, yisync::encode_frame(yisync::Message{
-                   yisync::Create{
+  send_all(fd, yisync::encode_frame(yisync::T_Message{
+                   yisync::T_Create{
                        .stream_id = kStreamId,
                        .seq = 1,
                        .file_id = 1,
-                       .kind = yisync::EntryKind::RegularFile,
+                       .kind = yisync::EM_EntryKind::REGULAR_FILE,
                        .name = "fault.txt",
                        .final_size = 5,
                    }}));
@@ -210,33 +210,33 @@ void run_bad_checksum(int fd) {
 
   auto data = make_data(5, bytes("hello"));
   data.checksum = yisync::Bytes{std::byte{0}, std::byte{0}, std::byte{0}, std::byte{0}};
-  send_all(fd, yisync::encode_frame(yisync::Message{data}));
-  expect_nack_reason(fd, yisync::NackReason::BadChecksum);
+  send_all(fd, yisync::encode_frame(yisync::T_Message{data}));
+  expect_nack_reason(fd, yisync::EM_NackReason::BAD_CHECKSUM);
 }
 
 void run_size_conflict(int fd) {
   send_hello_and_manifest(fd);
-  send_all(fd, yisync::encode_frame(yisync::Message{
-                   yisync::Create{
+  send_all(fd, yisync::encode_frame(yisync::T_Message{
+                   yisync::T_Create{
                        .stream_id = kStreamId,
                        .seq = 1,
                        .file_id = 1,
-                       .kind = yisync::EntryKind::RegularFile,
+                       .kind = yisync::EM_EntryKind::REGULAR_FILE,
                        .name = "fault.txt",
                        .final_size = 5,
                    }}));
   (void)recv_message(fd);
 
-  send_all(fd, yisync::encode_frame(yisync::Message{make_data(6, bytes("hello"))}));
-  expect_nack_reason(fd, yisync::NackReason::SizeConflict);
+  send_all(fd, yisync::encode_frame(yisync::T_Message{make_data(6, bytes("hello"))}));
+  expect_nack_reason(fd, yisync::EM_NackReason::SIZE_CONFLICT);
 }
 
 void run_bad_commit(int fd) {
   send_hello_and_manifest(fd);
   yisync::Bytes payload(yisync::kDefaultChunkSizeBytes + 1);
   std::fill(payload.begin(), payload.end(), std::byte{'x'});
-  send_all(fd, yisync::encode_frame(yisync::Message{
-                   yisync::FileBegin{
+  send_all(fd, yisync::encode_frame(yisync::T_Message{
+                   yisync::T_FileBegin{
                        .stream_id = kStreamId,
                        .seq = 1,
                        .file_id = 1,
@@ -250,23 +250,23 @@ void run_bad_commit(int fd) {
 
   yisync::Bytes chunk0(payload.begin(),
                        payload.begin() + static_cast<std::ptrdiff_t>(yisync::kDefaultChunkSizeBytes));
-  send_all(fd, yisync::encode_frame(yisync::Message{
-                   yisync::Chunk{
+  send_all(fd, yisync::encode_frame(yisync::T_Message{
+                   yisync::T_Chunk{
                        .stream_id = kStreamId,
                        .seq = 1,
                        .file_id = 1,
                        .chunk_index = 0,
                        .offset = 0,
                        .raw_len = static_cast<std::uint32_t>(chunk0.size()),
-                       .checksum_algo = yisync::ChecksumAlgo::Crc32c,
+                       .checksum_algo = yisync::EM_ChecksumAlgo::CRC32C,
                        .checksum = yisync::crc32c_bytes(chunk0),
                        .payload = chunk0,
                    }}));
   (void)recv_message(fd);
 
-  send_all(fd, yisync::encode_frame(yisync::Message{
-                   yisync::FileCommit{.stream_id = kStreamId, .seq = 1, .file_id = 1}}));
-  expect_nack_reason(fd, yisync::NackReason::BadCommit);
+  send_all(fd, yisync::encode_frame(yisync::T_Message{
+                   yisync::T_FileCommit{.stream_id = kStreamId, .seq = 1, .file_id = 1}}));
+  expect_nack_reason(fd, yisync::EM_NackReason::BAD_COMMIT);
 }
 
 }  // namespace

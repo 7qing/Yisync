@@ -27,7 +27,7 @@ namespace yisync::node {
 
 class ReceiverApp {
  public:
-  explicit ReceiverApp(NodeOptions options)
+  explicit ReceiverApp(T_NodeOptions options)
       : options_(std::move(options)),
         stream_map_(kStreamId, options_.root, &receiver_stream_roots_),
         coordinator_(stream_map_,
@@ -38,7 +38,7 @@ class ReceiverApp {
         network_(loop_,
                  make_line_endpoints(options_),
                  kMaxFrameBytes,
-                 yisync::network::make_hello(yisync::Role::Receiver,
+                 yisync::network::make_hello(yisync::EM_Role::RECEIVER,
                                              "receiver",
                                              static_cast<std::uint32_t>(options_.chunk_size),
                                              options_.recv_window_bytes)) {
@@ -51,7 +51,7 @@ class ReceiverApp {
       (void)stream_id;
       std::filesystem::create_directories(root);
     }
-    network_.on_message([this](yisync::LineId id, yisync::Message message) {
+    network_.on_message([this](yisync::LineId id, yisync::T_Message message) {
       on_message(id, std::move(message));
     });
     network_.on_error([this](yisync::LineId id, std::string error) {
@@ -168,44 +168,44 @@ class ReceiverApp {
     });
   }
 
-  void on_message(yisync::LineId line_id, yisync::Message message) {
+  void on_message(yisync::LineId line_id, yisync::T_Message message) {
     activity_generation_ += 1;
-    if (const auto* create = std::get_if<yisync::Create>(&message)) {
+    if (const auto* create = std::get_if<yisync::T_Create>(&message)) {
       execute_actions(coordinator_.apply_create(line_id, *create));
       return;
     }
-    if (const auto* data = std::get_if<yisync::Data>(&message)) {
+    if (const auto* data = std::get_if<yisync::T_Data>(&message)) {
       execute_actions(coordinator_.apply_data(line_id, *data));
       return;
     }
-    if (const auto* begin = std::get_if<yisync::FileBegin>(&message)) {
+    if (const auto* begin = std::get_if<yisync::T_FileBegin>(&message)) {
       execute_actions(coordinator_.apply_begin(line_id, *begin));
       return;
     }
-    if (const auto* chunk = std::get_if<yisync::Chunk>(&message)) {
+    if (const auto* chunk = std::get_if<yisync::T_Chunk>(&message)) {
       execute_actions(coordinator_.apply_chunk(line_id, *chunk));
       return;
     }
-    if (const auto* commit = std::get_if<yisync::FileCommit>(&message)) {
+    if (const auto* commit = std::get_if<yisync::T_FileCommit>(&message)) {
       execute_actions(coordinator_.apply_commit(line_id, *commit));
       return;
     }
-    if (const auto* manifest = std::get_if<yisync::Manifest1>(&message)) {
+    if (const auto* manifest = std::get_if<yisync::T_Manifest1>(&message)) {
       apply_manifest1(line_id, *manifest);
       return;
     }
     fail("RECEIVER unexpected message line=" + std::to_string(line_id));
   }
 
-  void send_message(yisync::LineId line_id, const yisync::Message& message) {
+  void send_message(yisync::LineId line_id, const yisync::T_Message& message) {
     network_.send(line_id, message);
   }
 
-  void send_nack(yisync::LineId line_id, const yisync::Nack& nack) {
-    send_message(line_id, yisync::Message{nack});
+  void send_nack(yisync::LineId line_id, const yisync::T_Nack& nack) {
+    send_message(line_id, yisync::T_Message{nack});
   }
 
-  void execute_actions(const yisync::ReceiverActionBatch& actions) {
+  void execute_actions(const yisync::T_ReceiverActionBatch& actions) {
     for (const auto& log : actions.logs) {
       if (log.error) {
         std::cerr << log.text << "\n";
@@ -282,8 +282,8 @@ class ReceiverApp {
     return false;
   }
 
-  yisync::Manifest1 receiver_manifest_for_manifest1(const yisync::Manifest1& manifest1) {
-    yisync::Manifest1 receiver_manifest;
+  yisync::T_Manifest1 receiver_manifest_for_manifest1(const yisync::T_Manifest1& manifest1) {
+    yisync::T_Manifest1 receiver_manifest;
     receiver_manifest.manifest_id = manifest1.manifest_id;
     const auto roots = manifest_roots();
     std::vector<std::string> stream_dir_names;
@@ -320,9 +320,9 @@ class ReceiverApp {
     return receiver_manifest;
   }
 
-  void apply_manifest1(yisync::LineId line_id, const yisync::Manifest1& manifest1) {
+  void apply_manifest1(yisync::LineId line_id, const yisync::T_Manifest1& manifest1) {
     committed_ = false;
-    yisync::Manifest2 manifest2;
+    yisync::T_Manifest2 manifest2;
     manifest2.manifest_id = manifest1.manifest_id;
     const auto receiver_manifest = receiver_manifest_for_manifest1(manifest1);
 
@@ -332,7 +332,7 @@ class ReceiverApp {
                                             [&](const auto& candidate) {
                                               return candidate.stream_id == sender_stream.stream_id;
                                             });
-      const std::vector<yisync::ManifestEntry> empty_receiver_entries;
+      const std::vector<yisync::T_ManifestEntry> empty_receiver_entries;
       const auto& receiver_entries = receiver_it == receiver_manifest.streams.end()
                                          ? empty_receiver_entries
                                          : receiver_it->entries;
@@ -343,7 +343,7 @@ class ReceiverApp {
         manifest2.streams.push_back(yisync::make_manifest2_stream(sender_stream.stream_id, start));
       } catch (const std::exception& ex) {
         send_nack(line_id,
-                  yisync::Nack{
+                  yisync::T_Nack{
                       .stream_id = sender_stream.stream_id,
                       .got_seq = 0,
                       .expected_seq = 0,
@@ -351,7 +351,7 @@ class ReceiverApp {
                       .offset = 0,
                       .expected_file_id = 0,
                       .expected_offset = 0,
-                      .reason = yisync::NackReason::SizeConflict,
+                      .reason = yisync::EM_NackReason::SIZE_CONFLICT,
                       .detail = ex.what(),
                   });
         return;
@@ -362,8 +362,8 @@ class ReceiverApp {
     for (const auto& stream : manifest1.streams) {
       entries += stream.entries.size();
     }
-    send_message(line_id, yisync::Message{manifest2});
-    std::cout << "RECEIVER Manifest2 line=" << line_id
+    send_message(line_id, yisync::T_Message{manifest2});
+    std::cout << "RECEIVER T_Manifest2 line=" << line_id
               << " manifest_id=" << manifest2.manifest_id
               << " streams=" << manifest2.streams.size()
               << " sender_entries=" << entries << "\n";
@@ -390,21 +390,21 @@ class ReceiverApp {
               << "\n";
   }
 
-  NodeOptions options_;
+  T_NodeOptions options_;
   yisync::EventLoop loop_;
   yisync::SpscDiskWriter disk_writer_;
   std::unordered_map<std::uint64_t, std::filesystem::path> receiver_stream_roots_;
-  yisync::ReceiverStreamMap stream_map_;
-  yisync::ReceiverCoordinator coordinator_;
-  yisync::CommitCompletionPoller commit_poller_;
-  yisync::network::ReceiverNetwork network_;
+  yisync::T_ReceiverStreamMap stream_map_;
+  yisync::T_ReceiverCoordinator coordinator_;
+  yisync::T_CommitCompletionPoller commit_poller_;
+  yisync::network::T_ReceiverNetwork network_;
   std::uint64_t activity_generation_ = 0;
   bool committed_ = false;
   bool failed_ = false;
   bool metrics_logged_ = false;
 };
 
-int run_receiver(NodeOptions options) {
+int run_receiver(T_NodeOptions options) {
   return ReceiverApp(std::move(options)).run();
 }
 

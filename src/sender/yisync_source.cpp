@@ -40,45 +40,45 @@ Bytes crc32c_value_bytes(std::uint32_t value) {
   };
 }
 
-struct WatchSnapshot {
+struct T_WatchSnapshot {
   std::uint64_t size = 0;
   std::filesystem::file_time_type mtime{};
 };
 
-WatchSnapshot snapshot_for_regular_file(const std::filesystem::path& path) {
+T_WatchSnapshot snapshot_for_regular_file(const std::filesystem::path& path) {
   std::error_code ec;
-  return WatchSnapshot{
+  return T_WatchSnapshot{
       .size = std::filesystem::file_size(path, ec),
       .mtime = std::filesystem::last_write_time(path, ec),
   };
 }
 
-class PollingSourceWatcher final : public ISourceWatcher {
+class PollingSourceWatcher final : public T_ISourceWatcher {
  public:
   explicit PollingSourceWatcher(std::filesystem::path root)
       : root_(std::move(root)) {
     snapshot_ = scan();
   }
 
-  std::vector<WatchEvent> poll() override {
+  std::vector<T_WatchEvent> poll() override {
     const auto next = scan();
-    std::vector<WatchEvent> events;
+    std::vector<T_WatchEvent> events;
     for (const auto& [path, current] : next) {
       const auto it = snapshot_.find(path);
       if (it == snapshot_.end()) {
-        events.push_back(WatchEvent{WatchEventKind::Created, path});
+        events.push_back(T_WatchEvent{EM_WatchEventKind::CREATED, path});
         continue;
       }
       if (current.size > it->second.size) {
-        events.push_back(WatchEvent{WatchEventKind::Appended, path});
+        events.push_back(T_WatchEvent{EM_WatchEventKind::APPENDED, path});
       } else if (current.size != it->second.size || current.mtime != it->second.mtime) {
-        events.push_back(WatchEvent{WatchEventKind::Modified, path});
+        events.push_back(T_WatchEvent{EM_WatchEventKind::MODIFIED, path});
       }
     }
     for (const auto& [path, previous] : snapshot_) {
       (void)previous;
       if (next.find(path) == next.end()) {
-        events.push_back(WatchEvent{WatchEventKind::Removed, path});
+        events.push_back(T_WatchEvent{EM_WatchEventKind::REMOVED, path});
       }
     }
     snapshot_ = next;
@@ -86,8 +86,8 @@ class PollingSourceWatcher final : public ISourceWatcher {
   }
 
  private:
-  std::unordered_map<std::filesystem::path, WatchSnapshot> scan() const {
-    std::unordered_map<std::filesystem::path, WatchSnapshot> result;
+  std::unordered_map<std::filesystem::path, T_WatchSnapshot> scan() const {
+    std::unordered_map<std::filesystem::path, T_WatchSnapshot> result;
     std::error_code ec;
     if (!std::filesystem::exists(root_, ec)) {
       return result;
@@ -113,7 +113,7 @@ class PollingSourceWatcher final : public ISourceWatcher {
         continue;
       }
       result.emplace(it->path(),
-                     WatchSnapshot{
+                     T_WatchSnapshot{
                          .size = it->file_size(),
                          .mtime = it->last_write_time(),
                      });
@@ -122,11 +122,11 @@ class PollingSourceWatcher final : public ISourceWatcher {
   }
 
   std::filesystem::path root_;
-  std::unordered_map<std::filesystem::path, WatchSnapshot> snapshot_;
+  std::unordered_map<std::filesystem::path, T_WatchSnapshot> snapshot_;
 };
 
 #if defined(__linux__)
-class InotifySourceWatcher final : public ISourceWatcher {
+class InotifySourceWatcher final : public T_ISourceWatcher {
  public:
   explicit InotifySourceWatcher(std::filesystem::path root)
       : root_(std::move(root)),
@@ -146,8 +146,8 @@ class InotifySourceWatcher final : public ISourceWatcher {
   InotifySourceWatcher(const InotifySourceWatcher&) = delete;
   InotifySourceWatcher& operator=(const InotifySourceWatcher&) = delete;
 
-  std::vector<WatchEvent> poll() override {
-    std::vector<WatchEvent> events;
+  std::vector<T_WatchEvent> poll() override {
+    std::vector<T_WatchEvent> events;
     std::array<char, 64 * 1024> buffer{};
     while (true) {
       const auto read = ::read(fd_, buffer.data(), buffer.size());
@@ -155,7 +155,7 @@ class InotifySourceWatcher final : public ISourceWatcher {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
           break;
         }
-        events.push_back(WatchEvent{WatchEventKind::Overflow, root_});
+        events.push_back(T_WatchEvent{EM_WatchEventKind::WATCH_OVERFLOW, root_});
         break;
       }
       if (read == 0) {
@@ -217,10 +217,10 @@ class InotifySourceWatcher final : public ISourceWatcher {
     }
   }
 
-  void handle_event(const inotify_event& event, std::vector<WatchEvent>& events) {
+  void handle_event(const inotify_event& event, std::vector<T_WatchEvent>& events) {
     if ((event.mask & IN_Q_OVERFLOW) != 0) {
       add_recursive(root_);
-      events.push_back(WatchEvent{WatchEventKind::Overflow, root_});
+      events.push_back(T_WatchEvent{EM_WatchEventKind::WATCH_OVERFLOW, root_});
       return;
     }
 
@@ -235,14 +235,14 @@ class InotifySourceWatcher final : public ISourceWatcher {
 
     if ((event.mask & (IN_DELETE | IN_MOVED_FROM | IN_DELETE_SELF | IN_MOVE_SELF)) != 0) {
       snapshot_.erase(path);
-      events.push_back(WatchEvent{WatchEventKind::Removed, std::move(path)});
+      events.push_back(T_WatchEvent{EM_WatchEventKind::REMOVED, std::move(path)});
       return;
     }
 
     if ((event.mask & IN_ISDIR) != 0) {
       if ((event.mask & (IN_CREATE | IN_MOVED_TO)) != 0) {
         add_recursive(path);
-        events.push_back(WatchEvent{WatchEventKind::Created, std::move(path)});
+        events.push_back(T_WatchEvent{EM_WatchEventKind::CREATED, std::move(path)});
       }
       return;
     }
@@ -261,31 +261,31 @@ class InotifySourceWatcher final : public ISourceWatcher {
     }
 
     if (std::filesystem::is_symlink(status)) {
-      events.push_back(WatchEvent{WatchEventKind::Modified, std::move(path)});
+      events.push_back(T_WatchEvent{EM_WatchEventKind::MODIFIED, std::move(path)});
       return;
     }
 
     const auto current = snapshot_for_regular_file(path);
     const auto previous = snapshot_.find(path);
-    WatchEventKind kind = WatchEventKind::Modified;
+    EM_WatchEventKind kind = EM_WatchEventKind::MODIFIED;
     if (previous == snapshot_.end()) {
-      kind = WatchEventKind::Created;
+      kind = EM_WatchEventKind::CREATED;
     } else if (current.size > previous->second.size) {
-      kind = WatchEventKind::Appended;
+      kind = EM_WatchEventKind::APPENDED;
     }
     snapshot_[path] = current;
-    events.push_back(WatchEvent{kind, std::move(path)});
+    events.push_back(T_WatchEvent{kind, std::move(path)});
   }
 
   std::filesystem::path root_;
   int fd_ = -1;
   std::unordered_map<int, std::filesystem::path> watches_;
-  std::unordered_map<std::filesystem::path, WatchSnapshot> snapshot_;
+  std::unordered_map<std::filesystem::path, T_WatchSnapshot> snapshot_;
 };
 #endif
 
 #if defined(__APPLE__)
-class FseventsSourceWatcher final : public ISourceWatcher {
+class FseventsSourceWatcher final : public T_ISourceWatcher {
  public:
   explicit FseventsSourceWatcher(std::filesystem::path root)
       : root_(std::move(root)) {
@@ -343,13 +343,13 @@ class FseventsSourceWatcher final : public ISourceWatcher {
   FseventsSourceWatcher(const FseventsSourceWatcher&) = delete;
   FseventsSourceWatcher& operator=(const FseventsSourceWatcher&) = delete;
 
-  std::vector<WatchEvent> poll() override {
+  std::vector<T_WatchEvent> poll() override {
     if (overflow_.exchange(false, std::memory_order_acq_rel)) {
       dirty_.store(false, std::memory_order_release);
-      return {WatchEvent{WatchEventKind::Overflow, root_}};
+      return {T_WatchEvent{EM_WatchEventKind::WATCH_OVERFLOW, root_}};
     }
     if (dirty_.exchange(false, std::memory_order_acq_rel)) {
-      return {WatchEvent{WatchEventKind::Modified, root_}};
+      return {T_WatchEvent{EM_WatchEventKind::MODIFIED, root_}};
     }
     return {};
   }
@@ -386,7 +386,7 @@ class FseventsSourceWatcher final : public ISourceWatcher {
 
 }  // namespace
 
-SourceDirectory::SourceDirectory(std::uint64_t stream_id,
+T_SourceDirectory::T_SourceDirectory(std::uint64_t stream_id,
                                  std::filesystem::path root,
                                  std::uint64_t checksum_range_len,
                                  std::string entry_name_regex)
@@ -395,14 +395,14 @@ SourceDirectory::SourceDirectory(std::uint64_t stream_id,
       checksum_range_len_(checksum_range_len),
       entry_name_regex_(std::move(entry_name_regex)) {}
 
-SimulatedSourceReader::SimulatedSourceReader(Bytes data)
+T_SimulatedSourceReader::T_SimulatedSourceReader(Bytes data)
     : data_(std::move(data)) {}
 
-const Bytes& SimulatedSourceReader::data() const noexcept {
+const Bytes& T_SimulatedSourceReader::data() const noexcept {
   return data_;
 }
 
-Bytes SimulatedSourceReader::read_range(std::uint64_t file_id,
+Bytes T_SimulatedSourceReader::read_range(std::uint64_t file_id,
                                         std::uint64_t offset,
                                         std::uint64_t len) const {
   (void)file_id;
@@ -413,20 +413,20 @@ Bytes SimulatedSourceReader::read_range(std::uint64_t file_id,
                data_.begin() + static_cast<std::ptrdiff_t>(offset + len));
 }
 
-const std::filesystem::path& SourceDirectory::root() const noexcept {
+const std::filesystem::path& T_SourceDirectory::root() const noexcept {
   return root_;
 }
 
-Manifest1Stream SourceDirectory::scan_manifest() const {
+T_Manifest1Stream T_SourceDirectory::scan_manifest() const {
   return scan_manifest_stream(stream_id_, root_, checksum_range_len_, {}, entry_name_regex_);
 }
 
-std::vector<SourceFile> SourceDirectory::files() const {
+std::vector<T_SourceFile> T_SourceDirectory::files() const {
   const auto manifest = scan_manifest();
-  std::vector<SourceFile> result;
+  std::vector<T_SourceFile> result;
   result.reserve(manifest.entries.size());
   for (const auto& entry : manifest.entries) {
-    SourceFile file;
+    T_SourceFile file;
     file.file_id = entry.file_id;
     file.path = root_ / entry.name;
     file.manifest = entry;
@@ -435,7 +435,7 @@ std::vector<SourceFile> SourceDirectory::files() const {
   return result;
 }
 
-SourceFile SourceDirectory::file(std::uint64_t file_id) const {
+T_SourceFile T_SourceDirectory::file(std::uint64_t file_id) const {
   const auto manifest = scan_manifest();
   const auto it = std::find_if(manifest.entries.begin(), manifest.entries.end(), [file_id](const auto& entry) {
     return entry.file_id == file_id;
@@ -443,21 +443,21 @@ SourceFile SourceDirectory::file(std::uint64_t file_id) const {
   if (it == manifest.entries.end()) {
     throw std::runtime_error("source manifest entry does not exist for file_id: " + std::to_string(file_id));
   }
-  if (it->kind != EntryKind::RegularFile) {
+  if (it->kind != EM_EntryKind::REGULAR_FILE) {
     throw std::runtime_error("source manifest entry is not a regular file: " + it->name);
   }
   const auto path = root_ / it->name;
   if (!std::filesystem::is_regular_file(path)) {
     throw std::runtime_error("source file does not exist: " + path.string());
   }
-  SourceFile file;
+  T_SourceFile file;
   file.file_id = file_id;
   file.path = path;
   file.manifest = *it;
   return file;
 }
 
-Bytes SourceDirectory::read_range(std::uint64_t file_id, std::uint64_t offset, std::uint64_t len) const {
+Bytes T_SourceDirectory::read_range(std::uint64_t file_id, std::uint64_t offset, std::uint64_t len) const {
   const auto source_file = file(file_id);
   if (offset > source_file.manifest.size || len > source_file.manifest.size ||
       offset + len > source_file.manifest.size) {
@@ -479,13 +479,13 @@ Bytes SourceDirectory::read_range(std::uint64_t file_id, std::uint64_t offset, s
   return bytes;
 }
 
-FileChecksum SourceDirectory::full_checksum(std::uint64_t file_id) const {
+T_FileChecksum T_SourceDirectory::full_checksum(std::uint64_t file_id) const {
   return full_checksum(file(file_id));
 }
 
-FileChecksum SourceDirectory::full_checksum(const SourceFile& file) const {
-  FileChecksum checksum;
-  checksum.algo = file.manifest.size == 0 ? ChecksumAlgo::None : ChecksumAlgo::Crc32c;
+T_FileChecksum T_SourceDirectory::full_checksum(const T_SourceFile& file) const {
+  T_FileChecksum checksum;
+  checksum.algo = file.manifest.size == 0 ? EM_ChecksumAlgo::NONE : EM_ChecksumAlgo::CRC32C;
   checksum.offset = 0;
   checksum.len = file.manifest.size;
   if (file.manifest.size > 0) {
@@ -512,10 +512,10 @@ FileChecksum SourceDirectory::full_checksum(const SourceFile& file) const {
   return checksum;
 }
 
-std::unique_ptr<ISourceWatcher> make_source_watcher(const std::filesystem::path& root,
-                                                    WatchBackend backend) {
+std::unique_ptr<T_ISourceWatcher> make_source_watcher(const std::filesystem::path& root,
+                                                    EM_WatchBackend backend) {
   switch (backend) {
-    case WatchBackend::Auto:
+    case EM_WatchBackend::AUTO:
 #if defined(__linux__)
       try {
         return std::make_unique<InotifySourceWatcher>(root);
@@ -531,9 +531,9 @@ std::unique_ptr<ISourceWatcher> make_source_watcher(const std::filesystem::path&
 #else
       return std::make_unique<PollingSourceWatcher>(root);
 #endif
-    case WatchBackend::Polling:
+    case EM_WatchBackend::POLLING:
       return std::make_unique<PollingSourceWatcher>(root);
-    case WatchBackend::Inotify:
+    case EM_WatchBackend::INOTIFY:
 #if defined(__linux__)
       try {
         return std::make_unique<InotifySourceWatcher>(root);
@@ -543,7 +543,7 @@ std::unique_ptr<ISourceWatcher> make_source_watcher(const std::filesystem::path&
 #else
       return std::make_unique<PollingSourceWatcher>(root);
 #endif
-    case WatchBackend::Fsevents:
+    case EM_WatchBackend::FSEVENTS:
 #if defined(__APPLE__)
       try {
         return std::make_unique<FseventsSourceWatcher>(root);
@@ -557,15 +557,15 @@ std::unique_ptr<ISourceWatcher> make_source_watcher(const std::filesystem::path&
   return std::make_unique<PollingSourceWatcher>(root);
 }
 
-std::string_view watch_backend_name(WatchBackend backend) noexcept {
+std::string_view watch_backend_name(EM_WatchBackend backend) noexcept {
   switch (backend) {
-    case WatchBackend::Auto:
+    case EM_WatchBackend::AUTO:
       return "auto";
-    case WatchBackend::Polling:
+    case EM_WatchBackend::POLLING:
       return "polling";
-    case WatchBackend::Inotify:
+    case EM_WatchBackend::INOTIFY:
       return "inotify";
-    case WatchBackend::Fsevents:
+    case EM_WatchBackend::FSEVENTS:
       return "fsevents";
   }
   return "unknown";

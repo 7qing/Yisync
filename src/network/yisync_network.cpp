@@ -14,11 +14,11 @@ std::uint64_t clamp_shift(std::uint64_t value, std::uint64_t max_value) noexcept
   return std::min(value, max_value);
 }
 
-bool contains_compression(const std::vector<Compression>& values, Compression target) {
+bool contains_compression(const std::vector<EM_Compression>& values, EM_Compression target) {
   return std::find(values.begin(), values.end(), target) != values.end();
 }
 
-bool contains_checksum(const std::vector<ChecksumAlgo>& values, ChecksumAlgo target) {
+bool contains_checksum(const std::vector<EM_ChecksumAlgo>& values, EM_ChecksumAlgo target) {
   return std::find(values.begin(), values.end(), target) != values.end();
 }
 
@@ -30,28 +30,28 @@ std::string hex_u64(std::uint64_t value) {
 
 }  // namespace
 
-std::string_view protocol_name(Protocol protocol) noexcept {
+std::string_view protocol_name(EM_Protocol protocol) noexcept {
   switch (protocol) {
-    case Protocol::Tcp:
+    case EM_Protocol::TCP:
       return "tcp";
-    case Protocol::Udp:
+    case EM_Protocol::UDP:
       return "udp";
-    case Protocol::Quic:
+    case EM_Protocol::QUIC:
       return "quic";
-    case Protocol::Areon:
+    case EM_Protocol::AREON:
       return "areon";
   }
   return "unknown";
 }
 
-std::chrono::milliseconds reconnect_delay(const ReconnectPolicy& policy,
+std::chrono::milliseconds reconnect_delay(const T_ReconnectPolicy& policy,
                                           std::uint64_t attempts) noexcept {
   const auto shift = clamp_shift(attempts, policy.max_shift);
   const auto scaled = policy.base_delay.count() << shift;
   return std::chrono::milliseconds(std::min<std::int64_t>(policy.max_delay.count(), scaled));
 }
 
-void log_line_state(std::ostream& out, const LineLogState& state) {
+void log_line_state(std::ostream& out, const T_LineLogState& state) {
   out << state.owner
       << " line " << state.event
       << " id=" << state.id
@@ -69,11 +69,11 @@ void log_line_state(std::ostream& out, const LineLogState& state) {
   out << "\n";
 }
 
-Hello make_hello(Role role,
+T_Hello make_hello(EM_Role role,
                  std::string node_id,
                  std::uint32_t chunk_size,
                  std::uint64_t max_inflight_bytes) {
-  return Hello{
+  return T_Hello{
       .node_id = std::move(node_id),
       .role = role,
       .min_version = kProtocolVersion,
@@ -82,16 +82,16 @@ Hello make_hello(Role role,
       .required_feature_flags = kRequiredFeatureFlags,
       .chunk_size = chunk_size,
       .max_inflight_bytes = max_inflight_bytes,
-      .supported_compression = {Compression::None},
-      .supported_checksum = {ChecksumAlgo::Crc32c},
+      .supported_compression = {EM_Compression::NONE},
+      .supported_checksum = {EM_ChecksumAlgo::CRC32C},
   };
 }
 
-NegotiationResult negotiate_hello(const Hello& local,
-                                  const Hello& peer,
-                                  Role expected_peer_role) {
+T_NegotiationResult negotiate_hello(const T_Hello& local,
+                                  const T_Hello& peer,
+                                  EM_Role expected_peer_role) {
   if (peer.role != expected_peer_role) {
-    return NegotiationResult{
+    return T_NegotiationResult{
         .ok = false,
         .error = "unexpected peer role",
     };
@@ -99,14 +99,14 @@ NegotiationResult negotiate_hello(const Hello& local,
   const auto min_version = std::max(local.min_version, peer.min_version);
   const auto max_version = std::min(local.max_version, peer.max_version);
   if (min_version > max_version || max_version < kProtocolVersion) {
-    return NegotiationResult{
+    return T_NegotiationResult{
         .ok = false,
         .error = "no compatible protocol version",
     };
   }
   const auto common_features = local.feature_flags & peer.feature_flags;
   if ((local.required_feature_flags & common_features) != local.required_feature_flags) {
-    return NegotiationResult{
+    return T_NegotiationResult{
         .ok = false,
         .error = "peer missing local required features required=" +
                  hex_u64(local.required_feature_flags) +
@@ -114,35 +114,35 @@ NegotiationResult negotiate_hello(const Hello& local,
     };
   }
   if ((peer.required_feature_flags & common_features) != peer.required_feature_flags) {
-    return NegotiationResult{
+    return T_NegotiationResult{
         .ok = false,
         .error = "local missing peer required features required=" +
                  hex_u64(peer.required_feature_flags) +
                  " common=" + hex_u64(common_features),
     };
   }
-  if (!contains_compression(local.supported_compression, Compression::None) ||
-      !contains_compression(peer.supported_compression, Compression::None)) {
-    return NegotiationResult{
+  if (!contains_compression(local.supported_compression, EM_Compression::NONE) ||
+      !contains_compression(peer.supported_compression, EM_Compression::NONE)) {
+    return T_NegotiationResult{
         .ok = false,
-        .error = "Compression::None is required",
+        .error = "EM_Compression::NONE is required",
     };
   }
-  if (!contains_checksum(local.supported_checksum, ChecksumAlgo::Crc32c) ||
-      !contains_checksum(peer.supported_checksum, ChecksumAlgo::Crc32c)) {
-    return NegotiationResult{
+  if (!contains_checksum(local.supported_checksum, EM_ChecksumAlgo::CRC32C) ||
+      !contains_checksum(peer.supported_checksum, EM_ChecksumAlgo::CRC32C)) {
+    return T_NegotiationResult{
         .ok = false,
-        .error = "ChecksumAlgo::Crc32c is required",
+        .error = "EM_ChecksumAlgo::CRC32C is required",
     };
   }
   if (local.chunk_size != 0 && peer.chunk_size != 0 && local.chunk_size != peer.chunk_size) {
-    return NegotiationResult{
+    return T_NegotiationResult{
         .ok = false,
         .error = "chunk_size mismatch local=" + std::to_string(local.chunk_size) +
                  " peer=" + std::to_string(peer.chunk_size),
     };
   }
-  return NegotiationResult{
+  return T_NegotiationResult{
       .ok = true,
       .negotiated_version = max_version,
       .negotiated_features = common_features,
@@ -150,44 +150,44 @@ NegotiationResult negotiate_hello(const Hello& local,
   };
 }
 
-SenderLineSet::SenderLineSet(EventLoop& loop,
-                             std::vector<LineEndpoint> lines,
+T_SenderLineSet::T_SenderLineSet(EventLoop& loop,
+                             std::vector<T_LineEndpoint> lines,
                              std::uint64_t max_frame_bytes,
-                             ReconnectPolicy reconnect_policy)
+                             T_ReconnectPolicy reconnect_policy)
     : loop_(loop),
       max_frame_bytes_(max_frame_bytes),
       reconnect_policy_(reconnect_policy) {
   lines_.reserve(lines.size());
   for (auto& endpoint : lines) {
-    lines_.push_back(Line{.endpoint = std::move(endpoint)});
+    lines_.push_back(T_Line{.endpoint = std::move(endpoint)});
   }
 }
 
-void SenderLineSet::start_all() {
+void T_SenderLineSet::start_all() {
   for (const auto& line : lines_) {
     connect(line.endpoint.id);
   }
 }
 
-void SenderLineSet::stop_reconnects() {
+void T_SenderLineSet::stop_reconnects() {
   reconnects_enabled_ = false;
   for (auto& line : lines_) {
     line.reconnect_scheduled = false;
   }
 }
 
-void SenderLineSet::connect(LineId id) {
+void T_SenderLineSet::connect(LineId id) {
   auto& line = find(id);
   if (!reconnects_enabled_ || can_send(id) || line.connecting) {
     return;
   }
-  if (line.endpoint.protocol != Protocol::Tcp) {
+  if (line.endpoint.protocol != EM_Protocol::TCP) {
     throw std::runtime_error("only TCP sender lines are implemented");
   }
   line.reconnect_scheduled = false;
   line.connecting = true;
   log_line_state(std::cout,
-                 LineLogState{
+                 T_LineLogState{
                      .owner = "SENDER",
                      .id = id,
                      .protocol = line.endpoint.protocol,
@@ -206,7 +206,7 @@ void SenderLineSet::connect(LineId id) {
         line.reconnect_scheduled = false;
         line.reconnect_attempts = 0;
         line.connection = std::move(connection);
-        line.connection->on_message([this, id](Message message) {
+        line.connection->on_message([this, id](T_Message message) {
           if (message_callback_) {
             message_callback_(id, std::move(message));
           }
@@ -216,7 +216,7 @@ void SenderLineSet::connect(LineId id) {
             return;
           }
           log_line_state(std::cerr,
-                         LineLogState{
+                         T_LineLogState{
                              .owner = "SENDER",
                              .id = id,
                              .protocol = find(id).endpoint.protocol,
@@ -231,7 +231,7 @@ void SenderLineSet::connect(LineId id) {
             return;
           }
           log_line_state(std::cerr,
-                         LineLogState{
+                         T_LineLogState{
                              .owner = "SENDER",
                              .id = id,
                              .protocol = find(id).endpoint.protocol,
@@ -242,7 +242,7 @@ void SenderLineSet::connect(LineId id) {
         });
         line.connection->start(loop_);
         log_line_state(std::cout,
-                       LineLogState{
+                       T_LineLogState{
                            .owner = "SENDER",
                            .id = id,
                            .protocol = line.endpoint.protocol,
@@ -258,7 +258,7 @@ void SenderLineSet::connect(LineId id) {
         line.connector.reset();
         line.connecting = false;
         log_line_state(std::cerr,
-                       LineLogState{
+                       T_LineLogState{
                            .owner = "SENDER",
                            .id = id,
                            .protocol = line.endpoint.protocol,
@@ -273,7 +273,7 @@ void SenderLineSet::connect(LineId id) {
       });
 }
 
-void SenderLineSet::schedule_reconnect(LineId id) {
+void T_SenderLineSet::schedule_reconnect(LineId id) {
   auto& line = find(id);
   if (!reconnects_enabled_ || can_send(id) || line.connecting || line.reconnect_scheduled) {
     return;
@@ -282,7 +282,7 @@ void SenderLineSet::schedule_reconnect(LineId id) {
   line.reconnect_attempts += 1;
   line.reconnect_scheduled = true;
   log_line_state(std::cout,
-                 LineLogState{
+                 T_LineLogState{
                      .owner = "SENDER",
                      .id = id,
                      .protocol = line.endpoint.protocol,
@@ -300,7 +300,7 @@ void SenderLineSet::schedule_reconnect(LineId id) {
   });
 }
 
-void SenderLineSet::mark_unavailable(LineId id) {
+void T_SenderLineSet::mark_unavailable(LineId id) {
   auto& line = find(id);
   const auto had_connection = static_cast<bool>(line.connection);
   if (!can_send(id) && !line.connecting && line.reconnect_scheduled) {
@@ -320,7 +320,7 @@ void SenderLineSet::mark_unavailable(LineId id) {
   }
 }
 
-void SenderLineSet::close(LineId id) {
+void T_SenderLineSet::close(LineId id) {
   auto& line = find(id);
   line.connecting = false;
   line.connector.reset();
@@ -330,7 +330,7 @@ void SenderLineSet::close(LineId id) {
   line.connection.reset();
 }
 
-void SenderLineSet::send(LineId id, const Message& message) {
+void T_SenderLineSet::send(LineId id, const T_Message& message) {
   auto& line = find(id);
   if (!line.connection || line.connection->closed()) {
     throw std::runtime_error("sender line is not connected");
@@ -338,28 +338,28 @@ void SenderLineSet::send(LineId id, const Message& message) {
   line.connection->send(message);
 }
 
-bool SenderLineSet::can_send(LineId id) const {
+bool T_SenderLineSet::can_send(LineId id) const {
   const auto& line = find(id);
   return line.connection && !line.connection->closed();
 }
 
-Endpoint SenderLineSet::endpoint(LineId id) const {
+Endpoint T_SenderLineSet::endpoint(LineId id) const {
   return find(id).endpoint.endpoint;
 }
 
-void SenderLineSet::on_message(MessageCallback callback) {
+void T_SenderLineSet::on_message(MessageCallback callback) {
   message_callback_ = std::move(callback);
 }
 
-void SenderLineSet::on_connected(ConnectedCallback callback) {
+void T_SenderLineSet::on_connected(ConnectedCallback callback) {
   connected_callback_ = std::move(callback);
 }
 
-void SenderLineSet::on_unavailable(UnavailableCallback callback) {
+void T_SenderLineSet::on_unavailable(UnavailableCallback callback) {
   unavailable_callback_ = std::move(callback);
 }
 
-SenderLineSet::Line& SenderLineSet::find(LineId id) {
+T_SenderLineSet::T_Line& T_SenderLineSet::find(LineId id) {
   auto it = std::find_if(lines_.begin(), lines_.end(), [id](const auto& line) {
     return line.endpoint.id == id;
   });
@@ -369,7 +369,7 @@ SenderLineSet::Line& SenderLineSet::find(LineId id) {
   return *it;
 }
 
-const SenderLineSet::Line& SenderLineSet::find(LineId id) const {
+const T_SenderLineSet::T_Line& T_SenderLineSet::find(LineId id) const {
   auto it = std::find_if(lines_.begin(), lines_.end(), [id](const auto& line) {
     return line.endpoint.id == id;
   });
@@ -379,26 +379,26 @@ const SenderLineSet::Line& SenderLineSet::find(LineId id) const {
   return *it;
 }
 
-ReceiverLineSet::ReceiverLineSet(EventLoop& loop,
-                                 std::vector<LineEndpoint> lines,
+T_ReceiverLineSet::T_ReceiverLineSet(EventLoop& loop,
+                                 std::vector<T_LineEndpoint> lines,
                                  std::uint64_t max_frame_bytes)
     : loop_(loop),
       max_frame_bytes_(max_frame_bytes) {
   lines_.reserve(lines.size());
   for (auto& endpoint : lines) {
-    lines_.push_back(Line{.endpoint = std::move(endpoint)});
+    lines_.push_back(T_Line{.endpoint = std::move(endpoint)});
   }
 }
 
-void ReceiverLineSet::listen_all() {
+void T_ReceiverLineSet::listen_all() {
   for (auto& line : lines_) {
-    if (line.endpoint.protocol != Protocol::Tcp) {
+    if (line.endpoint.protocol != EM_Protocol::TCP) {
       throw std::runtime_error("only TCP receiver lines are implemented");
     }
     line.listener = listen_async_tcp(line.endpoint.endpoint);
     line.endpoint.endpoint = line.listener->local_endpoint();
     log_line_state(std::cout,
-                   LineLogState{
+                   T_LineLogState{
                        .owner = "RECEIVER",
                        .id = line.endpoint.id,
                        .protocol = line.endpoint.protocol,
@@ -411,7 +411,7 @@ void ReceiverLineSet::listen_all() {
   }
 }
 
-void ReceiverLineSet::send(LineId id, const Message& message) {
+void T_ReceiverLineSet::send(LineId id, const T_Message& message) {
   auto& line = find(id);
   if (!line.connection || line.connection->closed()) {
     throw std::runtime_error("receiver line has no active connection");
@@ -419,7 +419,7 @@ void ReceiverLineSet::send(LineId id, const Message& message) {
   line.connection->send(message);
 }
 
-void ReceiverLineSet::close(LineId id) {
+void T_ReceiverLineSet::close(LineId id) {
   auto& line = find(id);
   if (line.connection && !line.connection->closed()) {
     line.connection->close();
@@ -427,32 +427,32 @@ void ReceiverLineSet::close(LineId id) {
   line.connection.reset();
 }
 
-bool ReceiverLineSet::can_send(LineId id) const {
+bool T_ReceiverLineSet::can_send(LineId id) const {
   const auto& line = find(id);
   return line.connection && !line.connection->closed();
 }
 
-Endpoint ReceiverLineSet::endpoint(LineId id) const {
+Endpoint T_ReceiverLineSet::endpoint(LineId id) const {
   return find(id).endpoint.endpoint;
 }
 
-void ReceiverLineSet::on_message(MessageCallback callback) {
+void T_ReceiverLineSet::on_message(MessageCallback callback) {
   message_callback_ = std::move(callback);
 }
 
-void ReceiverLineSet::on_accepted(AcceptedCallback callback) {
+void T_ReceiverLineSet::on_accepted(AcceptedCallback callback) {
   accepted_callback_ = std::move(callback);
 }
 
-void ReceiverLineSet::on_error(ErrorCallback callback) {
+void T_ReceiverLineSet::on_error(ErrorCallback callback) {
   error_callback_ = std::move(callback);
 }
 
-void ReceiverLineSet::on_close(CloseCallback callback) {
+void T_ReceiverLineSet::on_close(CloseCallback callback) {
   close_callback_ = std::move(callback);
 }
 
-ReceiverLineSet::Line& ReceiverLineSet::find(LineId id) {
+T_ReceiverLineSet::T_Line& T_ReceiverLineSet::find(LineId id) {
   auto it = std::find_if(lines_.begin(), lines_.end(), [id](const auto& line) {
     return line.endpoint.id == id;
   });
@@ -462,7 +462,7 @@ ReceiverLineSet::Line& ReceiverLineSet::find(LineId id) {
   return *it;
 }
 
-const ReceiverLineSet::Line& ReceiverLineSet::find(LineId id) const {
+const T_ReceiverLineSet::T_Line& T_ReceiverLineSet::find(LineId id) const {
   auto it = std::find_if(lines_.begin(), lines_.end(), [id](const auto& line) {
     return line.endpoint.id == id;
   });
@@ -472,14 +472,14 @@ const ReceiverLineSet::Line& ReceiverLineSet::find(LineId id) const {
   return *it;
 }
 
-void ReceiverLineSet::on_accept(LineId id, int fd, Endpoint peer) {
+void T_ReceiverLineSet::on_accept(LineId id, int fd, Endpoint peer) {
   auto& line = find(id);
   if (line.connection && !line.connection->closed()) {
     ::close(fd);
     return;
   }
   auto connection = std::make_shared<AsyncFrameConnection>(fd, max_frame_bytes_);
-  connection->on_message([this, id](Message message) {
+  connection->on_message([this, id](T_Message message) {
     if (message_callback_) {
       message_callback_(id, std::move(message));
     }
@@ -497,7 +497,7 @@ void ReceiverLineSet::on_accept(LineId id, int fd, Endpoint peer) {
   connection->start(loop_);
   line.connection = std::move(connection);
   log_line_state(std::cout,
-                 LineLogState{
+                 T_LineLogState{
                      .owner = "RECEIVER",
                      .id = id,
                      .protocol = line.endpoint.protocol,
@@ -509,13 +509,13 @@ void ReceiverLineSet::on_accept(LineId id, int fd, Endpoint peer) {
   }
 }
 
-ReceiverNetwork::ReceiverNetwork(EventLoop& loop,
-                                 std::vector<LineEndpoint> endpoints,
+T_ReceiverNetwork::T_ReceiverNetwork(EventLoop& loop,
+                                 std::vector<T_LineEndpoint> endpoints,
                                  std::uint64_t max_frame_bytes,
-                                 Hello local_hello)
+                                 T_Hello local_hello)
     : lines_(loop, std::move(endpoints), max_frame_bytes),
       local_hello_(std::move(local_hello)) {
-  lines_.on_message([this](LineId line_id, Message message) {
+  lines_.on_message([this](LineId line_id, T_Message message) {
     handle_message(line_id, std::move(message));
   });
   lines_.on_accepted([this](LineId line_id, Endpoint peer) {
@@ -538,16 +538,16 @@ ReceiverNetwork::ReceiverNetwork(EventLoop& loop,
   });
 }
 
-void ReceiverNetwork::listen() {
+void T_ReceiverNetwork::listen() {
   lines_.listen_all();
 }
 
-void ReceiverNetwork::send(LineId line_id, const Message& message) {
+void T_ReceiverNetwork::send(LineId line_id, const T_Message& message) {
   lines_.send(line_id, message);
 }
 
-void ReceiverNetwork::queue_heartbeat(LineId line_id, Heartbeat heartbeat) {
-  const HeartbeatKey key{line_id, heartbeat.stream_id};
+void T_ReceiverNetwork::queue_heartbeat(LineId line_id, T_Heartbeat heartbeat) {
+  const T_HeartbeatKey key{line_id, heartbeat.stream_id};
   auto& pending = pending_heartbeats_[key];
   if (!pending.dirty) {
     pending.heartbeat = std::move(heartbeat);
@@ -570,8 +570,8 @@ void ReceiverNetwork::queue_heartbeat(LineId line_id, Heartbeat heartbeat) {
   maybe_flush_heartbeat_batch(line_id, key);
 }
 
-void ReceiverNetwork::flush_heartbeats(LineId line_id) {
-  std::vector<HeartbeatKey> keys;
+void T_ReceiverNetwork::flush_heartbeats(LineId line_id) {
+  std::vector<T_HeartbeatKey> keys;
   for (const auto& [key, pending] : pending_heartbeats_) {
     if (pending.dirty && key.line_id == line_id) {
       keys.push_back(key);
@@ -583,13 +583,13 @@ void ReceiverNetwork::flush_heartbeats(LineId line_id) {
       continue;
     }
     auto heartbeat = std::move(it->second.heartbeat);
-    it->second = PendingHeartbeat{};
-    send(line_id, Message{heartbeat});
+    it->second = T_PendingHeartbeat{};
+    send(line_id, T_Message{heartbeat});
   }
 }
 
-void ReceiverNetwork::flush_all_heartbeats() {
-  std::vector<HeartbeatKey> keys;
+void T_ReceiverNetwork::flush_all_heartbeats() {
+  std::vector<T_HeartbeatKey> keys;
   keys.reserve(pending_heartbeats_.size());
   for (const auto& [key, pending] : pending_heartbeats_) {
     if (pending.dirty) {
@@ -602,46 +602,46 @@ void ReceiverNetwork::flush_all_heartbeats() {
       continue;
     }
     auto heartbeat = std::move(it->second.heartbeat);
-    it->second = PendingHeartbeat{};
-    send(key.line_id, Message{heartbeat});
+    it->second = T_PendingHeartbeat{};
+    send(key.line_id, T_Message{heartbeat});
   }
 }
 
-void ReceiverNetwork::set_heartbeat_ack_batch_size(std::uint64_t ack_batch_size) noexcept {
+void T_ReceiverNetwork::set_heartbeat_ack_batch_size(std::uint64_t ack_batch_size) noexcept {
   heartbeat_ack_batch_size_ = ack_batch_size;
 }
 
-bool ReceiverNetwork::can_send(LineId line_id) const {
+bool T_ReceiverNetwork::can_send(LineId line_id) const {
   return lines_.can_send(line_id);
 }
 
-Endpoint ReceiverNetwork::endpoint(LineId line_id) const {
+Endpoint T_ReceiverNetwork::endpoint(LineId line_id) const {
   return lines_.endpoint(line_id);
 }
 
-void ReceiverNetwork::on_message(MessageCallback callback) {
+void T_ReceiverNetwork::on_message(MessageCallback callback) {
   message_callback_ = std::move(callback);
 }
 
-void ReceiverNetwork::on_accepted(AcceptedCallback callback) {
+void T_ReceiverNetwork::on_accepted(AcceptedCallback callback) {
   accepted_callback_ = std::move(callback);
 }
 
-void ReceiverNetwork::on_error(ErrorCallback callback) {
+void T_ReceiverNetwork::on_error(ErrorCallback callback) {
   error_callback_ = std::move(callback);
 }
 
-void ReceiverNetwork::on_close(CloseCallback callback) {
+void T_ReceiverNetwork::on_close(CloseCallback callback) {
   close_callback_ = std::move(callback);
 }
 
-std::size_t ReceiverNetwork::HeartbeatKeyHash::operator()(const HeartbeatKey& key) const noexcept {
+std::size_t T_ReceiverNetwork::T_HeartbeatKeyHash::operator()(const T_HeartbeatKey& key) const noexcept {
   const auto lhs = std::hash<LineId>{}(key.line_id);
   const auto rhs = std::hash<std::uint64_t>{}(key.stream_id);
   return lhs ^ (rhs + 0x9e3779b97f4a7c15ULL + (lhs << 6) + (lhs >> 2));
 }
 
-void ReceiverNetwork::maybe_flush_heartbeat_batch(LineId line_id, const HeartbeatKey& key) {
+void T_ReceiverNetwork::maybe_flush_heartbeat_batch(LineId line_id, const T_HeartbeatKey& key) {
   if (heartbeat_ack_batch_size_ == 0) {
     return;
   }
@@ -655,14 +655,14 @@ void ReceiverNetwork::maybe_flush_heartbeat_batch(LineId line_id, const Heartbea
   flush_heartbeats(line_id);
 }
 
-void ReceiverNetwork::handle_message(LineId line_id, Message message) {
-  if (const auto* hello = std::get_if<Hello>(&message)) {
+void T_ReceiverNetwork::handle_message(LineId line_id, T_Message message) {
+  if (const auto* hello = std::get_if<T_Hello>(&message)) {
     handle_hello(line_id, *hello);
     return;
   }
   const auto negotiated = negotiated_lines_.find(line_id);
   if (negotiated == negotiated_lines_.end() || !negotiated->second.ok) {
-    fail_protocol(line_id, "business message before Hello negotiation");
+    fail_protocol(line_id, "business message before T_Hello negotiation");
     return;
   }
   if (message_callback_) {
@@ -670,19 +670,19 @@ void ReceiverNetwork::handle_message(LineId line_id, Message message) {
   }
 }
 
-void ReceiverNetwork::handle_hello(LineId line_id, const Hello& hello) {
-  const auto result = negotiate_hello(local_hello_, hello, Role::Sender);
+void T_ReceiverNetwork::handle_hello(LineId line_id, const T_Hello& hello) {
+  const auto result = negotiate_hello(local_hello_, hello, EM_Role::SENDER);
   negotiated_lines_[line_id] = result;
   if (!result.ok) {
     fail_protocol(line_id, "negotiation failed: " + result.error);
     return;
   }
-  lines_.send(line_id, Message{local_hello_});
+  lines_.send(line_id, T_Message{local_hello_});
   log_line_state(std::cout,
-                 LineLogState{
+                 T_LineLogState{
                      .owner = "RECEIVER",
                      .id = line_id,
-                     .protocol = Protocol::Tcp,
+                     .protocol = EM_Protocol::TCP,
                      .endpoint = lines_.endpoint(line_id),
                      .event = "negotiated",
                      .detail = "version=" + std::to_string(result.negotiated_version) +
@@ -690,12 +690,12 @@ void ReceiverNetwork::handle_hello(LineId line_id, const Hello& hello) {
                  });
 }
 
-void ReceiverNetwork::fail_protocol(LineId line_id, std::string error) {
+void T_ReceiverNetwork::fail_protocol(LineId line_id, std::string error) {
   log_line_state(std::cerr,
-                 LineLogState{
+                 T_LineLogState{
                      .owner = "RECEIVER",
                      .id = line_id,
-                     .protocol = Protocol::Tcp,
+                     .protocol = EM_Protocol::TCP,
                      .endpoint = lines_.endpoint(line_id),
                      .event = "protocol_error",
                      .detail = "error=" + error,
@@ -707,16 +707,16 @@ void ReceiverNetwork::fail_protocol(LineId line_id, std::string error) {
   }
 }
 
-SenderNetwork::SenderNetwork(EventLoop& loop,
-                             std::vector<LineEndpoint> endpoints,
-                             std::vector<LineConfig> line_configs,
+T_SenderNetwork::T_SenderNetwork(EventLoop& loop,
+                             std::vector<T_LineEndpoint> endpoints,
+                             std::vector<T_LineConfig> line_configs,
                              std::uint64_t max_frame_bytes,
-                             ReconnectPolicy reconnect_policy,
-                             Hello local_hello)
+                             T_ReconnectPolicy reconnect_policy,
+                             T_Hello local_hello)
     : lines_(loop, std::move(endpoints), max_frame_bytes, reconnect_policy),
       scheduler_(std::move(line_configs)),
       local_hello_(std::move(local_hello)) {
-  lines_.on_message([this](LineId line_id, Message message) {
+  lines_.on_message([this](LineId line_id, T_Message message) {
     handle_message(line_id, std::move(message));
   });
   lines_.on_connected([this](LineId line_id) {
@@ -727,15 +727,15 @@ SenderNetwork::SenderNetwork(EventLoop& loop,
   });
 }
 
-void SenderNetwork::start() {
+void T_SenderNetwork::start() {
   lines_.start_all();
 }
 
-void SenderNetwork::stop() {
+void T_SenderNetwork::stop() {
   lines_.stop_reconnects();
 }
 
-NetworkSendResult SenderNetwork::send(const Message& message, const SendRequest& request) {
+T_NetworkSendResult T_SenderNetwork::send(const T_Message& message, const T_SendRequest& request) {
   flush_controls();
   const auto grant = scheduler_.try_acquire(request);
   if (!grant.has_value()) {
@@ -746,19 +746,19 @@ NetworkSendResult SenderNetwork::send(const Message& message, const SendRequest&
     return {};
   }
   lines_.send(grant->line_id, message);
-  return NetworkSendResult{
+  return T_NetworkSendResult{
       .sent = true,
       .line_id = grant->line_id,
       .bytes = grant->bytes,
   };
 }
 
-NetworkControlResult SenderNetwork::send_control(Message message, std::string log_label) {
-  control_queue_.push_back(ControlMessage{
+T_NetworkControlResult T_SenderNetwork::send_control(T_Message message, std::string log_label) {
+  control_queue_.push_back(T_ControlMessage{
       .message = std::move(message),
       .log_label = std::move(log_label),
   });
-  NetworkControlResult result{
+  T_NetworkControlResult result{
       .queued = true,
       .sent = false,
       .line_id = 0,
@@ -771,23 +771,23 @@ NetworkControlResult SenderNetwork::send_control(Message message, std::string lo
   return result;
 }
 
-void SenderNetwork::mark_unavailable(LineId line_id) {
+void T_SenderNetwork::mark_unavailable(LineId line_id) {
   lines_.mark_unavailable(line_id);
 }
 
-void SenderNetwork::on_heartbeat(LineId line_id, const Heartbeat& heartbeat) {
+void T_SenderNetwork::on_heartbeat(LineId line_id, const T_Heartbeat& heartbeat) {
   scheduler_.on_heartbeat(line_id, heartbeat);
 }
 
-void SenderNetwork::refill_ticks(std::uint64_t ticks) {
+void T_SenderNetwork::refill_ticks(std::uint64_t ticks) {
   scheduler_.refill_ticks(ticks);
   for (const auto& snapshot : scheduler_.snapshots()) {
     if (snapshot.connected && snapshot.stale && snapshot.pending_sends > 0) {
       log_line_state(std::cerr,
-                     LineLogState{
+                     T_LineLogState{
                          .owner = "SENDER",
                          .id = snapshot.id,
-                         .protocol = Protocol::Tcp,
+                         .protocol = EM_Protocol::TCP,
                          .endpoint = lines_.endpoint(snapshot.id),
                          .event = "heartbeat_timeout",
                          .detail = "pending=" + std::to_string(snapshot.pending_sends),
@@ -798,31 +798,31 @@ void SenderNetwork::refill_ticks(std::uint64_t ticks) {
   flush_controls();
 }
 
-std::vector<LineSnapshot> SenderNetwork::snapshots() const {
+std::vector<T_LineSnapshot> T_SenderNetwork::snapshots() const {
   return scheduler_.snapshots();
 }
 
-void SenderNetwork::on_message(MessageCallback callback) {
+void T_SenderNetwork::on_message(MessageCallback callback) {
   message_callback_ = std::move(callback);
 }
 
-void SenderNetwork::on_connected(ConnectedCallback callback) {
+void T_SenderNetwork::on_connected(ConnectedCallback callback) {
   connected_callback_ = std::move(callback);
 }
 
-void SenderNetwork::on_lost_sends(LostSendCallback callback) {
+void T_SenderNetwork::on_lost_sends(LostSendCallback callback) {
   lost_send_callback_ = std::move(callback);
 }
 
-void SenderNetwork::handle_connected(LineId line_id) {
+void T_SenderNetwork::handle_connected(LineId line_id) {
   scheduler_.on_line_connected(line_id);
   negotiated_lines_.erase(line_id);
-  lines_.send(line_id, Message{local_hello_});
+  lines_.send(line_id, T_Message{local_hello_});
   log_line_state(std::cout,
-                 LineLogState{
+                 T_LineLogState{
                      .owner = "SENDER",
                      .id = line_id,
-                     .protocol = Protocol::Tcp,
+                     .protocol = EM_Protocol::TCP,
                      .endpoint = lines_.endpoint(line_id),
                      .event = "hello_sent",
                      .detail = "version_min=" + std::to_string(local_hello_.min_version) +
@@ -831,7 +831,7 @@ void SenderNetwork::handle_connected(LineId line_id) {
                  });
 }
 
-void SenderNetwork::handle_unavailable(LineId line_id, bool had_connection) {
+void T_SenderNetwork::handle_unavailable(LineId line_id, bool had_connection) {
   scheduler_.on_line_disconnected(line_id);
   negotiated_lines_.erase(line_id);
   if (had_connection) {
@@ -839,21 +839,21 @@ void SenderNetwork::handle_unavailable(LineId line_id, bool had_connection) {
   }
 }
 
-void SenderNetwork::handle_message(LineId line_id, Message message) {
-  if (const auto* hello = std::get_if<Hello>(&message)) {
+void T_SenderNetwork::handle_message(LineId line_id, T_Message message) {
+  if (const auto* hello = std::get_if<T_Hello>(&message)) {
     handle_hello(line_id, *hello);
     return;
   }
   const auto negotiated = negotiated_lines_.find(line_id);
   if (negotiated == negotiated_lines_.end() || !negotiated->second.ok) {
     log_line_state(std::cerr,
-                   LineLogState{
+                   T_LineLogState{
                        .owner = "SENDER",
                        .id = line_id,
-                       .protocol = Protocol::Tcp,
+                       .protocol = EM_Protocol::TCP,
                        .endpoint = lines_.endpoint(line_id),
                        .event = "protocol_error",
-                       .detail = "business message before Hello negotiation",
+                       .detail = "business message before T_Hello negotiation",
                    });
     scheduler_.on_line_protocol_error(line_id);
     lines_.mark_unavailable(line_id);
@@ -864,15 +864,15 @@ void SenderNetwork::handle_message(LineId line_id, Message message) {
   }
 }
 
-void SenderNetwork::handle_hello(LineId line_id, const Hello& hello) {
-  const auto result = negotiate_hello(local_hello_, hello, Role::Receiver);
+void T_SenderNetwork::handle_hello(LineId line_id, const T_Hello& hello) {
+  const auto result = negotiate_hello(local_hello_, hello, EM_Role::RECEIVER);
   negotiated_lines_[line_id] = result;
   if (!result.ok) {
     log_line_state(std::cerr,
-                   LineLogState{
+                   T_LineLogState{
                        .owner = "SENDER",
                        .id = line_id,
-                       .protocol = Protocol::Tcp,
+                       .protocol = EM_Protocol::TCP,
                        .endpoint = lines_.endpoint(line_id),
                        .event = "negotiation_failed",
                        .detail = "error=" + result.error,
@@ -883,10 +883,10 @@ void SenderNetwork::handle_hello(LineId line_id, const Hello& hello) {
   }
   scheduler_.on_line_negotiated(line_id, result.recv_window_bytes);
   log_line_state(std::cout,
-                 LineLogState{
+                 T_LineLogState{
                      .owner = "SENDER",
                      .id = line_id,
-                     .protocol = Protocol::Tcp,
+                     .protocol = EM_Protocol::TCP,
                      .endpoint = lines_.endpoint(line_id),
                      .event = "negotiated",
                      .detail = "version=" + std::to_string(result.negotiated_version) +
@@ -898,14 +898,14 @@ void SenderNetwork::handle_hello(LineId line_id, const Hello& hello) {
   flush_controls();
 }
 
-void SenderNetwork::emit_lost_sends() {
+void T_SenderNetwork::emit_lost_sends() {
   auto lost = scheduler_.take_lost_sends();
   if (!lost.empty() && lost_send_callback_) {
     lost_send_callback_(lost);
   }
 }
 
-std::optional<LineId> SenderNetwork::flush_one_control() {
+std::optional<LineId> T_SenderNetwork::flush_one_control() {
   if (control_queue_.empty()) {
     return std::nullopt;
   }
@@ -921,10 +921,10 @@ std::optional<LineId> SenderNetwork::flush_one_control() {
   lines_.send(*line_id, control.message);
   if (!control.log_label.empty()) {
     log_line_state(std::cout,
-                   LineLogState{
+                   T_LineLogState{
                        .owner = "SENDER",
                        .id = *line_id,
-                       .protocol = Protocol::Tcp,
+                       .protocol = EM_Protocol::TCP,
                        .endpoint = lines_.endpoint(*line_id),
                        .event = "control_sent",
                        .detail = control.log_label,
@@ -934,7 +934,7 @@ std::optional<LineId> SenderNetwork::flush_one_control() {
   return line_id;
 }
 
-void SenderNetwork::flush_controls() {
+void T_SenderNetwork::flush_controls() {
   while (flush_one_control().has_value()) {
   }
 }

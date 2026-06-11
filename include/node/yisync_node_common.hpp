@@ -35,13 +35,13 @@ inline constexpr std::chrono::milliseconds kWatchPollInterval{500};
 inline constexpr std::chrono::milliseconds kWatchRescanDebounce{200};
 inline constexpr std::size_t kDiskWriterQueueCapacity = 128;
 
-struct StreamRootConfig {
+struct T_StreamRootConfig {
   std::uint64_t stream_id = 0;
   std::filesystem::path root;
   std::string entry_name_regex;
 };
 
-struct NodeOptions {
+struct T_NodeOptions {
   std::string mode;
   std::string host = "127.0.0.1";
   std::uint16_t base_port = 19000;
@@ -51,11 +51,11 @@ struct NodeOptions {
   std::filesystem::path source_root;
   LineId drop_line_once = 0;
   std::filesystem::path config_path;
-  std::vector<StreamRootConfig> source_streams;
-  std::vector<network::LineEndpoint> line_endpoints;
-  std::vector<LineConfig> line_configs;
-  Compression compression = Compression::None;
-  ChecksumAlgo checksum_algo = ChecksumAlgo::Crc32c;
+  std::vector<T_StreamRootConfig> source_streams;
+  std::vector<network::T_LineEndpoint> line_endpoints;
+  std::vector<T_LineConfig> line_configs;
+  EM_Compression compression = EM_Compression::NONE;
+  EM_ChecksumAlgo checksum_algo = EM_ChecksumAlgo::CRC32C;
   std::uint64_t recv_window_bytes = kLineWindowBytes;
   std::uint64_t chunk_size = kDefaultChunkSizeBytes;
   std::uint64_t heartbeat_timeout_ticks = kHeartbeatTimeoutTicks;
@@ -69,7 +69,7 @@ struct NodeOptions {
   std::chrono::milliseconds receiver_heartbeat_interval = kReceiverHeartbeatInterval;
   std::chrono::milliseconds receiver_commit_poll_interval = kReceiverCommitPollInterval;
   bool watch = false;
-  WatchBackend watch_backend = WatchBackend::Auto;
+  EM_WatchBackend watch_backend = EM_WatchBackend::AUTO;
   std::chrono::milliseconds watch_poll_interval = kWatchPollInterval;
   std::chrono::milliseconds watch_rescan_debounce = kWatchRescanDebounce;
 };
@@ -77,29 +77,29 @@ struct NodeOptions {
 Bytes make_sender_bytes(std::uint64_t size);
 std::uint64_t local_file_size_or_zero(const std::filesystem::path& path);
 void fsync_file_for_durable_offset(const std::filesystem::path& path);
-FileChecksum full_crc32c_checksum(const Bytes& bytes);
+T_FileChecksum full_crc32c_checksum(const Bytes& bytes);
 
-Chunk make_chunk_from_payload(std::uint64_t stream_id,
+T_Chunk make_chunk_from_payload(std::uint64_t stream_id,
                               std::uint64_t seq,
                               std::uint64_t file_id,
                               std::uint64_t chunk_index,
                               Bytes payload,
                               std::uint64_t chunk_size = kDefaultChunkSizeBytes);
 
-Data make_data_from_payload(std::uint64_t stream_id,
+T_Data make_data_from_payload(std::uint64_t stream_id,
                             std::uint64_t file_id,
                             std::uint64_t seq,
                             std::uint64_t offset,
                             std::uint64_t final_size,
                             Bytes payload);
 
-std::uint64_t encoded_message_size(const Message& message);
+std::uint64_t encoded_message_size(const T_Message& message);
 std::vector<std::uint64_t> chunk_send_order(std::uint64_t chunk_count);
 std::optional<std::uint64_t> parse_u64_text(std::string_view text);
 std::optional<std::uint64_t> parse_stream_dir_name(const std::filesystem::path& path);
-std::uint16_t line_port(const NodeOptions& options, LineId line_id);
-std::vector<LineConfig> make_line_configs(const NodeOptions& options);
-std::vector<network::LineEndpoint> make_line_endpoints(const NodeOptions& options);
-NodeOptions parse_options(int argc, char** argv);
+std::uint16_t line_port(const T_NodeOptions& options, LineId line_id);
+std::vector<T_LineConfig> make_line_configs(const T_NodeOptions& options);
+std::vector<network::T_LineEndpoint> make_line_endpoints(const T_NodeOptions& options);
+T_NodeOptions parse_options(int argc, char** argv);
 
 }  // namespace yisync::node

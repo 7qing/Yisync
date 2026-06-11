@@ -49,57 +49,57 @@ void fsync_file_for_durable_offset(const std::filesystem::path& path) {
   ::close(fd);
 }
 
-FileChecksum full_crc32c_checksum(const Bytes& bytes) {
-  return FileChecksum{
-      .algo = ChecksumAlgo::Crc32c,
+T_FileChecksum full_crc32c_checksum(const Bytes& bytes) {
+  return T_FileChecksum{
+      .algo = EM_ChecksumAlgo::CRC32C,
       .offset = 0,
       .len = static_cast<std::uint64_t>(bytes.size()),
       .value = crc32c_bytes(bytes),
   };
 }
 
-Chunk make_chunk_from_payload(std::uint64_t stream_id,
+T_Chunk make_chunk_from_payload(std::uint64_t stream_id,
                               std::uint64_t seq,
                               std::uint64_t file_id,
                               std::uint64_t chunk_index,
                               Bytes payload,
                               std::uint64_t chunk_size) {
   const auto offset = chunk_index * chunk_size;
-  return Chunk{
+  return T_Chunk{
       .stream_id = stream_id,
       .seq = seq,
       .file_id = file_id,
       .chunk_index = chunk_index,
       .offset = offset,
       .raw_len = static_cast<std::uint32_t>(payload.size()),
-      .compression = Compression::None,
-      .checksum_algo = ChecksumAlgo::Crc32c,
+      .compression = EM_Compression::NONE,
+      .checksum_algo = EM_ChecksumAlgo::CRC32C,
       .checksum = crc32c_bytes(payload),
       .payload = std::move(payload),
   };
 }
 
-Data make_data_from_payload(std::uint64_t stream_id,
+T_Data make_data_from_payload(std::uint64_t stream_id,
                             std::uint64_t file_id,
                             std::uint64_t seq,
                             std::uint64_t offset,
                             std::uint64_t final_size,
                             Bytes payload) {
-  return Data{
+  return T_Data{
       .stream_id = stream_id,
       .seq = seq,
       .file_id = file_id,
       .offset = offset,
       .final_size = final_size,
       .raw_len = static_cast<std::uint32_t>(payload.size()),
-      .compression = Compression::None,
-      .checksum_algo = ChecksumAlgo::Crc32c,
+      .compression = EM_Compression::NONE,
+      .checksum_algo = EM_ChecksumAlgo::CRC32C,
       .checksum = crc32c_bytes(payload),
       .payload = std::move(payload),
   };
 }
 
-std::uint64_t encoded_message_size(const Message& message) {
+std::uint64_t encoded_message_size(const T_Message& message) {
   return encode_frame(message).size();
 }
 
@@ -130,7 +130,7 @@ std::optional<std::uint64_t> parse_stream_dir_name(const std::filesystem::path& 
   return parse_u64_text(path.filename().string());
 }
 
-std::uint16_t line_port(const NodeOptions& options, LineId line_id) {
+std::uint16_t line_port(const T_NodeOptions& options, LineId line_id) {
   return static_cast<std::uint16_t>(options.base_port + line_id - 1);
 }
 
@@ -280,30 +280,30 @@ std::uint16_t checked_port(std::uint64_t value, std::string_view key) {
   return static_cast<std::uint16_t>(value);
 }
 
-Compression parse_compression(std::string_view value) {
+EM_Compression parse_compression(std::string_view value) {
   const auto text = lower_ascii(trim(value));
   if (text.empty() || text == "none" || text == "off" || text == "false" || text == "0") {
-    return Compression::None;
+    return EM_Compression::NONE;
   }
   if (text == "lz4") {
-    return Compression::Lz4;
+    return EM_Compression::LZ4;
   }
   if (text == "zstd") {
-    return Compression::Zstd;
+    return EM_Compression::ZSTD;
   }
   throw std::runtime_error("unsupported compression in config: " + std::string(value));
 }
 
-ChecksumAlgo parse_checksum(std::string_view value) {
+EM_ChecksumAlgo parse_checksum(std::string_view value) {
   const auto text = lower_ascii(trim(value));
   if (text.empty() || text == "crc32c" || text == "crc") {
-    return ChecksumAlgo::Crc32c;
+    return EM_ChecksumAlgo::CRC32C;
   }
   if (text == "none" || text == "off" || text == "false" || text == "0") {
-    return ChecksumAlgo::None;
+    return EM_ChecksumAlgo::NONE;
   }
   if (text == "md5") {
-    return ChecksumAlgo::Md5;
+    return EM_ChecksumAlgo::MD5;
   }
   throw std::runtime_error("unsupported checksum in config: " + std::string(value));
 }
@@ -319,24 +319,24 @@ bool parse_bool(std::string_view value) {
   throw std::runtime_error("bad boolean value in config: " + std::string(value));
 }
 
-WatchBackend parse_watch_backend(std::string_view value) {
+EM_WatchBackend parse_watch_backend(std::string_view value) {
   const auto text = lower_ascii(trim(value));
   if (text.empty() || text == "auto") {
-    return WatchBackend::Auto;
+    return EM_WatchBackend::AUTO;
   }
   if (text == "polling" || text == "poll") {
-    return WatchBackend::Polling;
+    return EM_WatchBackend::POLLING;
   }
   if (text == "inotify") {
-    return WatchBackend::Inotify;
+    return EM_WatchBackend::INOTIFY;
   }
   if (text == "fsevents" || text == "fsevent") {
-    return WatchBackend::Fsevents;
+    return EM_WatchBackend::FSEVENTS;
   }
   throw std::runtime_error("unsupported watch backend in config: " + std::string(value));
 }
 
-struct IniConfig {
+struct T_IniConfig {
   std::unordered_map<std::string, std::unordered_map<std::string, std::string>> values;
 
   std::optional<std::string> get(std::string_view section, std::string_view key) const {
@@ -362,13 +362,13 @@ struct IniConfig {
   }
 };
 
-IniConfig load_ini_config(const std::filesystem::path& path) {
+T_IniConfig load_ini_config(const std::filesystem::path& path) {
   std::ifstream input(path);
   if (!input) {
     throw std::runtime_error("failed to open config: " + path.string());
   }
 
-  IniConfig config;
+  T_IniConfig config;
   std::string section;
   std::string line;
   std::uint64_t line_no = 0;
@@ -402,7 +402,7 @@ IniConfig load_ini_config(const std::filesystem::path& path) {
   return config;
 }
 
-std::vector<std::uint16_t> parse_ports(const IniConfig& config,
+std::vector<std::uint16_t> parse_ports(const T_IniConfig& config,
                                        std::string_view mode,
                                        std::uint16_t fallback_base_port) {
   if (auto ports_text = config.get_any("common", {"ports", "line_ports"})) {
@@ -444,7 +444,7 @@ std::vector<std::uint16_t> parse_ports(const IniConfig& config,
   return {fallback_base_port};
 }
 
-std::vector<std::string> parse_line_hosts(const IniConfig& config, const NodeOptions& options) {
+std::vector<std::string> parse_line_hosts(const T_IniConfig& config, const T_NodeOptions& options) {
   if (auto hosts = config.get_any("common", {"ips", "hosts", "line_ips"})) {
     return split_list(*hosts);
   }
@@ -454,7 +454,7 @@ std::vector<std::string> parse_line_hosts(const IniConfig& config, const NodeOpt
   return {options.host};
 }
 
-std::vector<std::uint64_t> parse_bandwidth_limits(const IniConfig& config) {
+std::vector<std::uint64_t> parse_bandwidth_limits(const T_IniConfig& config) {
   const auto text = config.get_any("common", {"bandwidth_limit", "bandwidth_limits", "line_limits"});
   if (!text.has_value()) {
     return {};
@@ -470,7 +470,7 @@ std::vector<std::uint64_t> parse_bandwidth_limits(const IniConfig& config) {
   return limits;
 }
 
-bool apply_size_option(const IniConfig& config,
+bool apply_size_option(const T_IniConfig& config,
                        std::initializer_list<std::string_view> keys,
                        std::uint64_t& target) {
   const auto text = config.get_any("common", keys);
@@ -485,7 +485,7 @@ bool apply_size_option(const IniConfig& config,
   return true;
 }
 
-bool apply_u64_option(const IniConfig& config,
+bool apply_u64_option(const T_IniConfig& config,
                       std::initializer_list<std::string_view> keys,
                       std::uint64_t& target) {
   const auto text = config.get_any("common", keys);
@@ -500,7 +500,7 @@ bool apply_u64_option(const IniConfig& config,
   return true;
 }
 
-bool apply_ms_option(const IniConfig& config,
+bool apply_ms_option(const T_IniConfig& config,
                      std::initializer_list<std::string_view> keys,
                      std::chrono::milliseconds& target) {
   std::uint64_t value = 0;
@@ -514,7 +514,7 @@ bool apply_ms_option(const IniConfig& config,
   return true;
 }
 
-void apply_runtime_config(NodeOptions& options, const IniConfig& config) {
+void apply_runtime_config(T_NodeOptions& options, const T_IniConfig& config) {
   const bool recv_window_configured =
       apply_size_option(config, {"recv_window", "recv_window_bytes", "receive_window", "receive_window_bytes"},
                         options.recv_window_bytes);
@@ -566,8 +566,8 @@ void apply_runtime_config(NodeOptions& options, const IniConfig& config) {
   }
 }
 
-std::uint32_t resolve_line_count(const NodeOptions& options,
-                                 const IniConfig& config,
+std::uint32_t resolve_line_count(const T_NodeOptions& options,
+                                 const T_IniConfig& config,
                                  std::size_t host_count,
                                  std::size_t port_count,
                                  std::size_t limit_count) {
@@ -588,9 +588,9 @@ std::uint32_t resolve_line_count(const NodeOptions& options,
   return static_cast<std::uint32_t>(lines);
 }
 
-std::vector<StreamRootConfig> parse_stream_roots(std::string_view value,
+std::vector<T_StreamRootConfig> parse_stream_roots(std::string_view value,
                                                  std::uint64_t& next_stream_id) {
-  std::vector<StreamRootConfig> roots;
+  std::vector<T_StreamRootConfig> roots;
   for (const auto& item : split_list(value)) {
     const auto regex_delim = item.find("::");
     const auto path_and_id = regex_delim == std::string::npos
@@ -601,7 +601,7 @@ std::vector<StreamRootConfig> parse_stream_roots(std::string_view value,
                                 : item.substr(regex_delim + 2);
     const auto colon = path_and_id.find(':');
     if (colon == std::string::npos) {
-      roots.push_back(StreamRootConfig{
+      roots.push_back(T_StreamRootConfig{
           .stream_id = next_stream_id++,
           .root = path_and_id,
           .entry_name_regex = regex_text,
@@ -614,7 +614,7 @@ std::vector<StreamRootConfig> parse_stream_roots(std::string_view value,
     if (!id.has_value() || *id == 0 || path_text.empty()) {
       throw std::runtime_error("bad stream root config: " + item);
     }
-    roots.push_back(StreamRootConfig{
+    roots.push_back(T_StreamRootConfig{
         .stream_id = *id,
         .root = path_text,
         .entry_name_regex = regex_text,
@@ -623,7 +623,7 @@ std::vector<StreamRootConfig> parse_stream_roots(std::string_view value,
   return roots;
 }
 
-void append_stream_roots(std::vector<StreamRootConfig>& out,
+void append_stream_roots(std::vector<T_StreamRootConfig>& out,
                          std::string_view value,
                          std::uint64_t& next_stream_id) {
   auto roots = parse_stream_roots(value, next_stream_id);
@@ -632,7 +632,7 @@ void append_stream_roots(std::vector<StreamRootConfig>& out,
              std::make_move_iterator(roots.end()));
 }
 
-void apply_config_file(NodeOptions& options, const std::filesystem::path& path) {
+void apply_config_file(T_NodeOptions& options, const std::filesystem::path& path) {
   const auto config = load_ini_config(path);
 
   if (auto value = config.get_any("common", {"compress", "compression"})) {
@@ -710,16 +710,16 @@ void apply_config_file(NodeOptions& options, const std::filesystem::path& path) 
     const auto budget = limits.empty()
                             ? kLineBudgetBytes
                             : limits[std::min<std::size_t>(index, limits.size() - 1)];
-    options.line_endpoints.push_back(network::LineEndpoint{
+    options.line_endpoints.push_back(network::T_LineEndpoint{
         .id = i,
-        .protocol = network::Protocol::Tcp,
+        .protocol = network::EM_Protocol::TCP,
         .endpoint = Endpoint{hosts[index], expanded_ports[index]},
         .name = "tcp-line-" + std::to_string(i),
     });
-    options.line_configs.push_back(LineConfig{
+    options.line_configs.push_back(T_LineConfig{
         .id = i,
         .name = "tcp-line-" + std::to_string(i),
-        .limiter = TokenBucketConfig{
+        .limiter = T_TokenBucketConfig{
             .tokens_per_tick = budget,
             .capacity = budget,
             .tick = std::chrono::milliseconds(10),
@@ -744,18 +744,18 @@ void print_usage() {
 
 }  // namespace
 
-std::vector<LineConfig> make_line_configs(const NodeOptions& options) {
+std::vector<T_LineConfig> make_line_configs(const T_NodeOptions& options) {
   if (!options.line_configs.empty()) {
     return options.line_configs;
   }
 
-  std::vector<LineConfig> configs;
+  std::vector<T_LineConfig> configs;
   configs.reserve(options.lines);
   for (std::uint32_t i = 1; i <= options.lines; ++i) {
-    configs.push_back(LineConfig{
+    configs.push_back(T_LineConfig{
         .id = i,
         .name = "tcp-line-" + std::to_string(i),
-        .limiter = TokenBucketConfig{
+        .limiter = T_TokenBucketConfig{
             .tokens_per_tick = kLineBudgetBytes,
             .capacity = kLineBudgetBytes,
             .tick = std::chrono::milliseconds(10),
@@ -768,17 +768,17 @@ std::vector<LineConfig> make_line_configs(const NodeOptions& options) {
   return configs;
 }
 
-std::vector<network::LineEndpoint> make_line_endpoints(const NodeOptions& options) {
+std::vector<network::T_LineEndpoint> make_line_endpoints(const T_NodeOptions& options) {
   if (!options.line_endpoints.empty()) {
     return options.line_endpoints;
   }
 
-  std::vector<network::LineEndpoint> endpoints;
+  std::vector<network::T_LineEndpoint> endpoints;
   endpoints.reserve(options.lines);
   for (std::uint32_t i = 1; i <= options.lines; ++i) {
-    endpoints.push_back(network::LineEndpoint{
+    endpoints.push_back(network::T_LineEndpoint{
         .id = i,
-        .protocol = network::Protocol::Tcp,
+        .protocol = network::EM_Protocol::TCP,
         .endpoint = Endpoint{options.host, line_port(options, i)},
         .name = "tcp-line-" + std::to_string(i),
     });
@@ -786,13 +786,13 @@ std::vector<network::LineEndpoint> make_line_endpoints(const NodeOptions& option
   return endpoints;
 }
 
-NodeOptions parse_options(int argc, char** argv) {
+T_NodeOptions parse_options(int argc, char** argv) {
   if (argc < 2) {
     print_usage();
     throw std::runtime_error("missing mode");
   }
 
-  NodeOptions options;
+  T_NodeOptions options;
   int first_option = 2;
   options.mode = argv[1];
   if (options.mode == "--config") {

@@ -12,7 +12,7 @@ namespace yisync {
 
 using LineId = std::uint32_t;
 
-struct TokenBucketConfig {
+struct T_TokenBucketConfig {
   std::uint64_t tokens_per_tick = 20 * 1024;
   std::uint64_t capacity = 20 * 1024;
   std::chrono::milliseconds tick{10};
@@ -21,7 +21,7 @@ struct TokenBucketConfig {
 class TokenBucket {
  public:
   TokenBucket() = default;
-  explicit TokenBucket(TokenBucketConfig config);
+  explicit TokenBucket(T_TokenBucketConfig config);
 
   std::uint64_t available() const noexcept;
   std::uint64_t capacity() const noexcept;
@@ -32,20 +32,20 @@ class TokenBucket {
   bool try_consume(std::uint64_t bytes) noexcept;
 
  private:
-  TokenBucketConfig config_;
+  T_TokenBucketConfig config_;
   std::uint64_t tokens_ = 0;
 };
 
-struct LineConfig {
+struct T_LineConfig {
   LineId id = 0;
   std::string name;
-  TokenBucketConfig limiter;
+  T_TokenBucketConfig limiter;
   std::uint64_t initial_recv_window_bytes = 0;
   std::uint64_t heartbeat_timeout_ticks = 300;
   bool initially_connected = true;
 };
 
-struct LineSnapshot {
+struct T_LineSnapshot {
   LineId id = 0;
   std::string name;
   std::uint64_t tokens = 0;
@@ -61,15 +61,15 @@ struct LineSnapshot {
   std::uint64_t last_completed_bytes = 0;
 };
 
-enum class SendKind : std::uint8_t {
-  Create = 1,
-  Data = 2,
-  FileBegin = 3,
-  Chunk = 4,
-  FileCommit = 5,
+enum class EM_SendKind : std::uint8_t {
+  CREATE = 1,
+  DATA = 2,
+  FILE_BEGIN = 3,
+  CHUNK = 4,
+  FILE_COMMIT = 5,
 };
 
-struct SendRequest {
+struct T_SendRequest {
   std::uint64_t stream_id = 0;
   std::uint64_t file_id = 0;
   std::uint64_t seq = 0;
@@ -77,18 +77,18 @@ struct SendRequest {
   std::uint64_t end_offset = 0;
   std::uint64_t bytes = 0;
   bool split_allowed = false;
-  SendKind kind = SendKind::Data;
+  EM_SendKind kind = EM_SendKind::DATA;
   std::uint64_t chunk_index = 0;
 };
 
-struct SendGrant {
+struct T_SendGrant {
   LineId line_id = 0;
   std::uint64_t bytes = 0;
 };
 
-struct LostSend {
+struct T_LostSend {
   LineId line_id = 0;
-  SendKind kind = SendKind::Data;
+  EM_SendKind kind = EM_SendKind::DATA;
   std::uint64_t stream_id = 0;
   std::uint64_t file_id = 0;
   std::uint64_t seq = 0;
@@ -98,28 +98,28 @@ struct LostSend {
   std::uint64_t bytes = 0;
 };
 
-class MultiLineScheduler {
+class T_MultiLineScheduler {
  public:
-  explicit MultiLineScheduler(std::vector<LineConfig> configs);
+  explicit T_MultiLineScheduler(std::vector<T_LineConfig> configs);
 
   void refill_ticks(std::uint64_t ticks);
-  std::optional<SendGrant> try_acquire(const SendRequest& request);
+  std::optional<T_SendGrant> try_acquire(const T_SendRequest& request);
   void on_line_connected(LineId line_id);
   void on_line_negotiated(LineId line_id, std::uint64_t recv_window_bytes);
   void on_line_disconnected(LineId line_id);
   void on_line_protocol_error(LineId line_id);
   void on_line_failure(LineId line_id);
-  void on_heartbeat(LineId line_id, const Heartbeat& heartbeat);
+  void on_heartbeat(LineId line_id, const T_Heartbeat& heartbeat);
   void on_nack(LineId line_id);
 
   std::optional<LineId> choose_control_line() const;
-  std::vector<LineSnapshot> snapshots() const;
-  std::vector<LostSend> take_lost_sends();
+  std::vector<T_LineSnapshot> snapshots() const;
+  std::vector<T_LostSend> take_lost_sends();
 
  private:
   struct LineState {
-    struct PendingSend {
-      SendKind kind = SendKind::Data;
+    struct T_PendingSend {
+      EM_SendKind kind = EM_SendKind::DATA;
       std::uint64_t stream_id = 0;
       std::uint64_t file_id = 0;
       std::uint64_t seq = 0;
@@ -129,7 +129,7 @@ class MultiLineScheduler {
       std::uint64_t bytes = 0;
     };
 
-    LineConfig config;
+    T_LineConfig config;
     TokenBucket bucket;
     std::uint64_t inflight_bytes = 0;
     std::uint64_t recv_window_bytes = 0;
@@ -140,15 +140,15 @@ class MultiLineScheduler {
     bool negotiated = false;
     bool healthy = true;
     bool stale = false;
-    std::vector<PendingSend> pending;
+    std::vector<T_PendingSend> pending;
   };
 
   std::vector<LineState> lines_;
-  std::vector<LostSend> lost_sends_;
+  std::vector<T_LostSend> lost_sends_;
 
   LineState* find_line(LineId line_id);
   const LineState* find_line(LineId line_id) const;
-  static std::uint64_t score_line(const LineState& line, const SendRequest& request);
+  static std::uint64_t score_line(const LineState& line, const T_SendRequest& request);
   void clear_inflight(LineState& line);
 };
 

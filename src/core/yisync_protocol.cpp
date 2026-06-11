@@ -10,7 +10,7 @@
 namespace yisync {
 namespace {
 
-constexpr std::size_t kHeaderLen = MessageHeader::kHeaderLen;
+constexpr std::size_t kHeaderLen = T_MessageHeader::kHeaderLen;
 
 class Writer {
  public:
@@ -133,23 +133,23 @@ std::uint8_t to_u8(Enum value) {
   return static_cast<std::uint8_t>(value);
 }
 
-void write_checksum(Writer& writer, const FileChecksum& checksum) {
+void write_checksum(Writer& writer, const T_FileChecksum& checksum) {
   writer.u8(to_u8(checksum.algo));
   writer.u64(checksum.offset);
   writer.u64(checksum.len);
   writer.bytes(checksum.value);
 }
 
-FileChecksum read_checksum(Reader& reader) {
-  FileChecksum checksum;
-  checksum.algo = static_cast<ChecksumAlgo>(reader.u8());
+T_FileChecksum read_checksum(Reader& reader) {
+  T_FileChecksum checksum;
+  checksum.algo = static_cast<EM_ChecksumAlgo>(reader.u8());
   checksum.offset = reader.u64();
   checksum.len = reader.u64();
   checksum.value = reader.bytes();
   return checksum;
 }
 
-void write_manifest_entry(Writer& writer, const ManifestEntry& entry) {
+void write_manifest_entry(Writer& writer, const T_ManifestEntry& entry) {
   writer.u64(entry.file_id);
   writer.u64(entry.seq);
   writer.u8(to_u8(entry.kind));
@@ -159,11 +159,11 @@ void write_manifest_entry(Writer& writer, const ManifestEntry& entry) {
   write_checksum(writer, entry.checksum);
 }
 
-ManifestEntry read_manifest_entry(Reader& reader) {
-  ManifestEntry entry;
+T_ManifestEntry read_manifest_entry(Reader& reader) {
+  T_ManifestEntry entry;
   entry.file_id = reader.u64();
   entry.seq = reader.u64();
-  entry.kind = static_cast<EntryKind>(reader.u8());
+  entry.kind = static_cast<EM_EntryKind>(reader.u8());
   entry.name = reader.string();
   entry.link_target = reader.string();
   entry.size = reader.u64();
@@ -171,45 +171,45 @@ ManifestEntry read_manifest_entry(Reader& reader) {
   return entry;
 }
 
-void write_manifest2_stream(Writer& writer, const Manifest2Stream& stream) {
+void write_manifest2_stream(Writer& writer, const T_Manifest2Stream& stream) {
   writer.u64(stream.stream_id);
   writer.u8(to_u8(stream.action));
   writer.u64(stream.start_file_id);
   writer.u64(stream.start_offset);
 }
 
-Manifest2Stream read_manifest2_stream(Reader& reader) {
-  Manifest2Stream stream;
+T_Manifest2Stream read_manifest2_stream(Reader& reader) {
+  T_Manifest2Stream stream;
   stream.stream_id = reader.u64();
-  stream.action = static_cast<Manifest2Action>(reader.u8());
+  stream.action = static_cast<EM_Manifest2Action>(reader.u8());
   stream.start_file_id = reader.u64();
   stream.start_offset = reader.u64();
   return stream;
 }
 
-void write_received_chunk(Writer& writer, const ReceivedChunk& chunk) {
+void write_received_chunk(Writer& writer, const T_ReceivedChunk& chunk) {
   writer.u64(chunk.seq);
   writer.u64(chunk.file_id);
   writer.u64(chunk.chunk_index);
 }
 
-ReceivedChunk read_received_chunk(Reader& reader) {
-  ReceivedChunk chunk;
+T_ReceivedChunk read_received_chunk(Reader& reader) {
+  T_ReceivedChunk chunk;
   chunk.seq = reader.u64();
   chunk.file_id = reader.u64();
   chunk.chunk_index = reader.u64();
   return chunk;
 }
 
-void write_missing_chunk_range(Writer& writer, const MissingChunkRange& range) {
+void write_missing_chunk_range(Writer& writer, const T_MissingChunkRange& range) {
   writer.u64(range.seq);
   writer.u64(range.file_id);
   writer.u64(range.first_chunk_index);
   writer.u64(range.last_chunk_index);
 }
 
-MissingChunkRange read_missing_chunk_range(Reader& reader) {
-  MissingChunkRange range;
+T_MissingChunkRange read_missing_chunk_range(Reader& reader) {
+  T_MissingChunkRange range;
   range.seq = reader.u64();
   range.file_id = reader.u64();
   range.first_chunk_index = reader.u64();
@@ -217,7 +217,7 @@ MissingChunkRange read_missing_chunk_range(Reader& reader) {
   return range;
 }
 
-void write_header_prefix(Writer& writer, const MessageHeader& header) {
+void write_header_prefix(Writer& writer, const T_MessageHeader& header) {
   writer.u32(header.magic);
   writer.u8(header.version);
   writer.u8(to_u8(header.msg_type));
@@ -225,17 +225,17 @@ void write_header_prefix(Writer& writer, const MessageHeader& header) {
   writer.u32(header.body_len);
 }
 
-MessageHeader read_header_prefix(Reader& reader) {
-  MessageHeader header;
+T_MessageHeader read_header_prefix(Reader& reader) {
+  T_MessageHeader header;
   header.magic = reader.u32();
   header.version = reader.u8();
-  header.msg_type = static_cast<MessageType>(reader.u8());
+  header.msg_type = static_cast<EM_MessageType>(reader.u8());
   header.header_len = reader.u16();
   header.body_len = reader.u32();
   return header;
 }
 
-Bytes encode_body(const Hello& message) {
+Bytes encode_body(const T_Hello& message) {
   Writer writer;
   writer.string(message.node_id);
   writer.u8(to_u8(message.role));
@@ -256,7 +256,7 @@ Bytes encode_body(const Hello& message) {
   return writer.take();
 }
 
-Bytes encode_body(const Manifest1& message) {
+Bytes encode_body(const T_Manifest1& message) {
   Writer writer;
   writer.u64(message.manifest_id);
   writer.u32(static_cast<std::uint32_t>(message.streams.size()));
@@ -271,7 +271,7 @@ Bytes encode_body(const Manifest1& message) {
   return writer.take();
 }
 
-Bytes encode_body(const Manifest2& message) {
+Bytes encode_body(const T_Manifest2& message) {
   Writer writer;
   writer.u64(message.manifest_id);
   writer.u32(static_cast<std::uint32_t>(message.streams.size()));
@@ -281,7 +281,7 @@ Bytes encode_body(const Manifest2& message) {
   return writer.take();
 }
 
-Bytes encode_body(const Create& message) {
+Bytes encode_body(const T_Create& message) {
   Writer writer;
   writer.u64(message.stream_id);
   writer.u64(message.seq);
@@ -296,7 +296,7 @@ Bytes encode_body(const Create& message) {
   return writer.take();
 }
 
-Bytes encode_body(const Data& message) {
+Bytes encode_body(const T_Data& message) {
   Writer writer;
   writer.u64(message.stream_id);
   writer.u64(message.seq);
@@ -312,7 +312,7 @@ Bytes encode_body(const Data& message) {
   return writer.take();
 }
 
-Bytes encode_body(const FileBegin& message) {
+Bytes encode_body(const T_FileBegin& message) {
   Writer writer;
   writer.u64(message.stream_id);
   writer.u64(message.seq);
@@ -328,7 +328,7 @@ Bytes encode_body(const FileBegin& message) {
   return writer.take();
 }
 
-Bytes encode_body(const Chunk& message) {
+Bytes encode_body(const T_Chunk& message) {
   Writer writer;
   writer.u64(message.stream_id);
   writer.u64(message.seq);
@@ -344,7 +344,7 @@ Bytes encode_body(const Chunk& message) {
   return writer.take();
 }
 
-Bytes encode_body(const FileCommit& message) {
+Bytes encode_body(const T_FileCommit& message) {
   Writer writer;
   writer.u64(message.stream_id);
   writer.u64(message.seq);
@@ -352,7 +352,7 @@ Bytes encode_body(const FileCommit& message) {
   return writer.take();
 }
 
-Bytes encode_body(const Heartbeat& message) {
+Bytes encode_body(const T_Heartbeat& message) {
   Writer writer;
   writer.u64(message.stream_id);
   writer.u64(message.next_seq);
@@ -371,7 +371,7 @@ Bytes encode_body(const Heartbeat& message) {
   return writer.take();
 }
 
-Bytes encode_body(const Nack& message) {
+Bytes encode_body(const T_Nack& message) {
   Writer writer;
   writer.u64(message.stream_id);
   writer.u64(message.got_seq);
@@ -385,10 +385,10 @@ Bytes encode_body(const Nack& message) {
   return writer.take();
 }
 
-Hello decode_hello(Reader& reader) {
-  Hello message;
+T_Hello decode_hello(Reader& reader) {
+  T_Hello message;
   message.node_id = reader.string();
-  message.role = static_cast<Role>(reader.u8());
+  message.role = static_cast<EM_Role>(reader.u8());
   message.min_version = reader.u16();
   message.max_version = reader.u16();
   message.feature_flags = reader.u64();
@@ -398,23 +398,23 @@ Hello decode_hello(Reader& reader) {
   const auto compression_count = reader.u32();
   message.supported_compression.clear();
   for (std::uint32_t i = 0; i < compression_count; ++i) {
-    message.supported_compression.push_back(static_cast<Compression>(reader.u8()));
+    message.supported_compression.push_back(static_cast<EM_Compression>(reader.u8()));
   }
   const auto checksum_count = reader.u32();
   message.supported_checksum.clear();
   for (std::uint32_t i = 0; i < checksum_count; ++i) {
-    message.supported_checksum.push_back(static_cast<ChecksumAlgo>(reader.u8()));
+    message.supported_checksum.push_back(static_cast<EM_ChecksumAlgo>(reader.u8()));
   }
   return message;
 }
 
-Manifest1 decode_manifest1(Reader& reader) {
-  Manifest1 message;
+T_Manifest1 decode_manifest1(Reader& reader) {
+  T_Manifest1 message;
   message.manifest_id = reader.u64();
   const auto stream_count = reader.u32();
   message.streams.reserve(stream_count);
   for (std::uint32_t stream_i = 0; stream_i < stream_count; ++stream_i) {
-    Manifest1Stream stream;
+    T_Manifest1Stream stream;
     stream.stream_id = reader.u64();
     stream.root = reader.string();
     const auto entry_count = reader.u32();
@@ -427,8 +427,8 @@ Manifest1 decode_manifest1(Reader& reader) {
   return message;
 }
 
-Manifest2 decode_manifest2(Reader& reader) {
-  Manifest2 message;
+T_Manifest2 decode_manifest2(Reader& reader) {
+  T_Manifest2 message;
   message.manifest_id = reader.u64();
   const auto stream_count = reader.u32();
   message.streams.reserve(stream_count);
@@ -438,12 +438,12 @@ Manifest2 decode_manifest2(Reader& reader) {
   return message;
 }
 
-Create decode_create(Reader& reader) {
-  Create message;
+T_Create decode_create(Reader& reader) {
+  T_Create message;
   message.stream_id = reader.u64();
   message.seq = reader.u64();
   message.file_id = reader.u64();
-  message.kind = static_cast<EntryKind>(reader.u8());
+  message.kind = static_cast<EM_EntryKind>(reader.u8());
   message.name = reader.string();
   message.link_target = reader.string();
   message.final_size = reader.u64();
@@ -453,8 +453,8 @@ Create decode_create(Reader& reader) {
   return message;
 }
 
-Data decode_data(Reader& reader) {
-  Data message;
+T_Data decode_data(Reader& reader) {
+  T_Data message;
   message.stream_id = reader.u64();
   message.seq = reader.u64();
   message.file_id = reader.u64();
@@ -462,8 +462,8 @@ Data decode_data(Reader& reader) {
   message.final_size = reader.u64();
   message.raw_len = reader.u32();
   const auto payload_len = reader.u32();
-  message.compression = static_cast<Compression>(reader.u8());
-  message.checksum_algo = static_cast<ChecksumAlgo>(reader.u8());
+  message.compression = static_cast<EM_Compression>(reader.u8());
+  message.checksum_algo = static_cast<EM_ChecksumAlgo>(reader.u8());
   message.checksum = reader.bytes();
   message.payload = reader.bytes();
   if (message.payload.size() != payload_len) {
@@ -472,8 +472,8 @@ Data decode_data(Reader& reader) {
   return message;
 }
 
-FileBegin decode_file_begin(Reader& reader) {
-  FileBegin message;
+T_FileBegin decode_file_begin(Reader& reader) {
+  T_FileBegin message;
   message.stream_id = reader.u64();
   message.seq = reader.u64();
   message.file_id = reader.u64();
@@ -488,8 +488,8 @@ FileBegin decode_file_begin(Reader& reader) {
   return message;
 }
 
-Chunk decode_chunk(Reader& reader) {
-  Chunk message;
+T_Chunk decode_chunk(Reader& reader) {
+  T_Chunk message;
   message.stream_id = reader.u64();
   message.seq = reader.u64();
   message.file_id = reader.u64();
@@ -497,8 +497,8 @@ Chunk decode_chunk(Reader& reader) {
   message.offset = reader.u64();
   message.raw_len = reader.u32();
   const auto payload_len = reader.u32();
-  message.compression = static_cast<Compression>(reader.u8());
-  message.checksum_algo = static_cast<ChecksumAlgo>(reader.u8());
+  message.compression = static_cast<EM_Compression>(reader.u8());
+  message.checksum_algo = static_cast<EM_ChecksumAlgo>(reader.u8());
   message.checksum = reader.bytes();
   message.payload = reader.bytes();
   if (message.payload.size() != payload_len) {
@@ -507,16 +507,16 @@ Chunk decode_chunk(Reader& reader) {
   return message;
 }
 
-FileCommit decode_file_commit(Reader& reader) {
-  FileCommit message;
+T_FileCommit decode_file_commit(Reader& reader) {
+  T_FileCommit message;
   message.stream_id = reader.u64();
   message.seq = reader.u64();
   message.file_id = reader.u64();
   return message;
 }
 
-Heartbeat decode_heartbeat(Reader& reader) {
-  Heartbeat message;
+T_Heartbeat decode_heartbeat(Reader& reader) {
+  T_Heartbeat message;
   message.stream_id = reader.u64();
   message.next_seq = reader.u64();
   message.file_id = reader.u64();
@@ -536,8 +536,8 @@ Heartbeat decode_heartbeat(Reader& reader) {
   return message;
 }
 
-Nack decode_nack(Reader& reader) {
-  Nack message;
+T_Nack decode_nack(Reader& reader) {
+  T_Nack message;
   message.stream_id = reader.u64();
   message.got_seq = reader.u64();
   message.expected_seq = reader.u64();
@@ -545,7 +545,7 @@ Nack decode_nack(Reader& reader) {
   message.offset = reader.u64();
   message.expected_file_id = reader.u64();
   message.expected_offset = reader.u64();
-  message.reason = static_cast<NackReason>(reader.u8());
+  message.reason = static_cast<EM_NackReason>(reader.u8());
   message.detail = reader.string();
   return message;
 }
@@ -566,69 +566,69 @@ Bytes crc32c_bytes(std::span<const std::byte> bytes) {
   };
 }
 
-Frame encode_message(const Message& message) {
-  Frame frame;
+T_Frame encode_message(const T_Message& message) {
+  T_Frame frame;
   frame.body = std::visit([](const auto& value) { return encode_body(value); }, message);
   frame.header.body_len = static_cast<std::uint32_t>(frame.body.size());
   frame.header.header_len = static_cast<std::uint16_t>(kHeaderLen);
-  frame.header.version = MessageHeader::kVersion;
-  frame.header.magic = MessageHeader::kMagic;
+  frame.header.version = T_MessageHeader::kVersion;
+  frame.header.magic = T_MessageHeader::kMagic;
   frame.header.msg_type = std::visit(
-      [](const auto& value) -> MessageType {
+      [](const auto& value) -> EM_MessageType {
         using T = std::decay_t<decltype(value)>;
-        if constexpr (std::is_same_v<T, Hello>) return MessageType::Hello;
-        if constexpr (std::is_same_v<T, Manifest1>) return MessageType::Manifest1;
-        if constexpr (std::is_same_v<T, Manifest2>) return MessageType::Manifest2;
-        if constexpr (std::is_same_v<T, Create>) return MessageType::Create;
-        if constexpr (std::is_same_v<T, Data>) return MessageType::Data;
-        if constexpr (std::is_same_v<T, FileBegin>) return MessageType::FileBegin;
-        if constexpr (std::is_same_v<T, Chunk>) return MessageType::Chunk;
-        if constexpr (std::is_same_v<T, FileCommit>) return MessageType::FileCommit;
-        if constexpr (std::is_same_v<T, Heartbeat>) return MessageType::Heartbeat;
-        if constexpr (std::is_same_v<T, Nack>) return MessageType::Nack;
+        if constexpr (std::is_same_v<T, T_Hello>) return EM_MessageType::HELLO;
+        if constexpr (std::is_same_v<T, T_Manifest1>) return EM_MessageType::MANIFEST1;
+        if constexpr (std::is_same_v<T, T_Manifest2>) return EM_MessageType::MANIFEST2;
+        if constexpr (std::is_same_v<T, T_Create>) return EM_MessageType::CREATE;
+        if constexpr (std::is_same_v<T, T_Data>) return EM_MessageType::DATA;
+        if constexpr (std::is_same_v<T, T_FileBegin>) return EM_MessageType::FILE_BEGIN;
+        if constexpr (std::is_same_v<T, T_Chunk>) return EM_MessageType::CHUNK;
+        if constexpr (std::is_same_v<T, T_FileCommit>) return EM_MessageType::FILE_COMMIT;
+        if constexpr (std::is_same_v<T, T_Heartbeat>) return EM_MessageType::HEARTBEAT;
+        if constexpr (std::is_same_v<T, T_Nack>) return EM_MessageType::NACK;
       },
       message);
   return frame;
 }
 
-Message decode_message(const Frame& frame) {
-  if (frame.header.magic != MessageHeader::kMagic) {
+T_Message decode_message(const T_Frame& frame) {
+  if (frame.header.magic != T_MessageHeader::kMagic) {
     throw std::runtime_error("bad frame magic");
   }
-  if (frame.header.version != MessageHeader::kVersion) {
+  if (frame.header.version != T_MessageHeader::kVersion) {
     throw std::runtime_error("unsupported frame version");
   }
   Reader reader(frame.body);
-  Message message;
+  T_Message message;
   switch (frame.header.msg_type) {
-    case MessageType::Hello:
+    case EM_MessageType::HELLO:
       message = decode_hello(reader);
       break;
-    case MessageType::Manifest1:
+    case EM_MessageType::MANIFEST1:
       message = decode_manifest1(reader);
       break;
-    case MessageType::Manifest2:
+    case EM_MessageType::MANIFEST2:
       message = decode_manifest2(reader);
       break;
-    case MessageType::Create:
+    case EM_MessageType::CREATE:
       message = decode_create(reader);
       break;
-    case MessageType::Data:
+    case EM_MessageType::DATA:
       message = decode_data(reader);
       break;
-    case MessageType::FileBegin:
+    case EM_MessageType::FILE_BEGIN:
       message = decode_file_begin(reader);
       break;
-    case MessageType::Chunk:
+    case EM_MessageType::CHUNK:
       message = decode_chunk(reader);
       break;
-    case MessageType::FileCommit:
+    case EM_MessageType::FILE_COMMIT:
       message = decode_file_commit(reader);
       break;
-    case MessageType::Heartbeat:
+    case EM_MessageType::HEARTBEAT:
       message = decode_heartbeat(reader);
       break;
-    case MessageType::Nack:
+    case EM_MessageType::NACK:
       message = decode_nack(reader);
       break;
     default:
@@ -638,7 +638,7 @@ Message decode_message(const Frame& frame) {
   return message;
 }
 
-Bytes encode_frame(const Message& message) {
+Bytes encode_frame(const T_Message& message) {
   const auto frame = encode_message(message);
   Writer writer;
   write_header_prefix(writer, frame.header);
@@ -647,7 +647,7 @@ Bytes encode_frame(const Message& message) {
   return bytes;
 }
 
-Frame decode_frame(std::span<const std::byte> bytes) {
+T_Frame decode_frame(std::span<const std::byte> bytes) {
   if (bytes.size() < kHeaderLen) {
     throw std::runtime_error("truncated frame header");
   }
@@ -660,7 +660,7 @@ Frame decode_frame(std::span<const std::byte> bytes) {
   if (bytes.size() != header.header_len + header.body_len) {
     throw std::runtime_error("frame length mismatch");
   }
-  Frame frame;
+  T_Frame frame;
   frame.header = header;
   frame.body = Bytes(bytes.begin() + static_cast<std::ptrdiff_t>(header.header_len), bytes.end());
   return frame;

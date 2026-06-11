@@ -7,9 +7,9 @@
 
 namespace yisync {
 
-class CommitCompletionPoller {
+class T_CommitCompletionPoller {
  public:
-  CommitCompletionPoller(EventLoop& loop, std::chrono::milliseconds interval);
+  T_CommitCompletionPoller(EventLoop& loop, std::chrono::milliseconds interval);
 
   void schedule(std::function<void()> callback);
   void mark_idle() noexcept;

@@ -25,8 +25,8 @@ std::uint64_t file_size_or_zero(const std::filesystem::path& path) {
   return size;
 }
 
-Bytes raw_data_for_data_message(const Data& data) {
-  if (data.compression != Compression::None) {
+Bytes raw_data_for_data_message(const T_Data& data) {
+  if (data.compression != EM_Compression::NONE) {
     throw std::runtime_error("compression is not implemented in this prototype");
   }
   if (data.payload.size() != data.raw_len) {
@@ -35,8 +35,8 @@ Bytes raw_data_for_data_message(const Data& data) {
   return data.payload;
 }
 
-Bytes raw_data_for_chunk_message(const Chunk& chunk) {
-  if (chunk.compression != Compression::None) {
+Bytes raw_data_for_chunk_message(const T_Chunk& chunk) {
+  if (chunk.compression != EM_Compression::NONE) {
     throw std::runtime_error("compression is not implemented in this prototype");
   }
   if (chunk.payload.size() != chunk.raw_len) {
@@ -106,21 +106,21 @@ std::filesystem::path path_from_manifest_or_legacy(std::uint64_t stream_id,
 
 }  // namespace
 
-ReceiverStream::ReceiverStream(std::uint64_t stream_id, std::filesystem::path root)
+T_ReceiverStream::T_ReceiverStream(std::uint64_t stream_id, std::filesystem::path root)
     : stream_id_(stream_id), root_(std::move(root)) {
   std::filesystem::create_directories(root_);
   reset_session_from_disk();
 }
 
-const ReceiverStreamState& ReceiverStream::state() const noexcept {
+const T_ReceiverStreamState& T_ReceiverStream::state() const noexcept {
   return state_;
 }
 
-std::filesystem::path ReceiverStream::current_path() const {
+std::filesystem::path T_ReceiverStream::current_path() const {
   return current_path_;
 }
 
-void ReceiverStream::refresh_committed_from_disk() {
+void T_ReceiverStream::refresh_committed_from_disk() {
   const auto expected_seq = state_.expected_seq;
   state_.active = true;
   state_.expected_seq = expected_seq;
@@ -131,7 +131,7 @@ void ReceiverStream::refresh_committed_from_disk() {
     state_.current_offset = 0;
     state_.current_final_size = 0;
     state_.next_create_file_id = 1;
-    current_kind_ = EntryKind::RegularFile;
+    current_kind_ = EM_EntryKind::REGULAR_FILE;
     current_path_.clear();
     return;
   }
@@ -146,28 +146,28 @@ void ReceiverStream::refresh_committed_from_disk() {
   current_path_ = path_for_name(latest.name);
 }
 
-Heartbeat ReceiverStream::heartbeat(std::uint64_t recv_window_bytes, std::uint64_t durable_offset) const {
-  return Heartbeat{stream_id_, state_.expected_seq, state_.current_file_id, state_.current_offset, durable_offset, recv_window_bytes};
+T_Heartbeat T_ReceiverStream::heartbeat(std::uint64_t recv_window_bytes, std::uint64_t durable_offset) const {
+  return T_Heartbeat{stream_id_, state_.expected_seq, state_.current_file_id, state_.current_offset, durable_offset, recv_window_bytes};
 }
 
-std::optional<Nack> ReceiverStream::apply(const Create& create) {
+std::optional<T_Nack> T_ReceiverStream::apply(const T_Create& create) {
   if (!state_.active || create.stream_id != stream_id_) {
-    return nack(create.stream_id, create.seq, create.file_id, 0, NackReason::BadSession, "inactive or wrong stream");
+    return nack(create.stream_id, create.seq, create.file_id, 0, EM_NackReason::BAD_SESSION, "inactive or wrong stream");
   }
   if (create.seq < state_.expected_seq) {
     return std::nullopt;
   }
   if (create.seq > state_.expected_seq) {
-    return nack(create.stream_id, create.seq, create.file_id, 0, NackReason::BadSeq, "future seq");
+    return nack(create.stream_id, create.seq, create.file_id, 0, EM_NackReason::BAD_SEQ, "future seq");
   }
-  if (create.kind != EntryKind::RegularFile &&
-      create.kind != EntryKind::Directory &&
-      create.kind != EntryKind::Symlink) {
+  if (create.kind != EM_EntryKind::REGULAR_FILE &&
+      create.kind != EM_EntryKind::DIRECTORY &&
+      create.kind != EM_EntryKind::SYMLINK) {
     return nack(create.stream_id,
                 create.seq,
                 create.file_id,
                 0,
-                NackReason::BadCreate,
+                EM_NackReason::BAD_CREATE,
                 "unsupported create entry kind");
   }
   if (!is_safe_relative_name(create.name)) {
@@ -175,7 +175,7 @@ std::optional<Nack> ReceiverStream::apply(const Create& create) {
                 create.seq,
                 create.file_id,
                 0,
-                NackReason::BadCreate,
+                EM_NackReason::BAD_CREATE,
                 "unsafe target path");
   }
 
@@ -186,7 +186,7 @@ std::optional<Nack> ReceiverStream::apply(const Create& create) {
                   create.seq,
                   create.file_id,
                   0,
-                  NackReason::PrevFileIncomplete,
+                  EM_NackReason::PREV_FILE_INCOMPLETE,
                   "previous file does not exist");
     }
     const auto prev_size = file_size_or_zero(prev_path);
@@ -195,7 +195,7 @@ std::optional<Nack> ReceiverStream::apply(const Create& create) {
                   create.seq,
                   create.file_id,
                   0,
-                  NackReason::PrevFileIncomplete,
+                  EM_NackReason::PREV_FILE_INCOMPLETE,
                   "previous file size mismatch");
     }
     if (!checksum_matches(create.prev_checksum, prev_path)) {
@@ -203,7 +203,7 @@ std::optional<Nack> ReceiverStream::apply(const Create& create) {
                   create.seq,
                   create.file_id,
                   0,
-                  NackReason::ChecksumMismatch,
+                  EM_NackReason::CHECKSUM_MISMATCH,
                   "previous file checksum mismatch");
     }
   }
@@ -215,7 +215,7 @@ std::optional<Nack> ReceiverStream::apply(const Create& create) {
                 create.seq,
                 create.file_id,
                 existing_size,
-                NackReason::FileExists,
+                EM_NackReason::FILE_EXISTS,
                 "target file already exists");
   }
 
@@ -226,28 +226,28 @@ std::optional<Nack> ReceiverStream::apply(const Create& create) {
                 create.seq,
                 create.file_id,
                 0,
-                NackReason::IoError,
+                EM_NackReason::IO_ERROR,
                 "failed to create parent directories: " + ec.message());
   }
 
-  if (create.kind == EntryKind::Directory) {
+  if (create.kind == EM_EntryKind::DIRECTORY) {
     std::filesystem::create_directory(path, ec);
     if (ec) {
       return nack(create.stream_id,
                   create.seq,
                   create.file_id,
                   0,
-                  NackReason::IoError,
+                  EM_NackReason::IO_ERROR,
                   "failed to create directory: " + ec.message());
     }
-  } else if (create.kind == EntryKind::Symlink) {
+  } else if (create.kind == EM_EntryKind::SYMLINK) {
     std::filesystem::create_symlink(std::filesystem::path(create.link_target), path, ec);
     if (ec) {
       return nack(create.stream_id,
                   create.seq,
                   create.file_id,
                   0,
-                  NackReason::IoError,
+                  EM_NackReason::IO_ERROR,
                   "failed to create symlink: " + ec.message());
     }
   } else {
@@ -257,7 +257,7 @@ std::optional<Nack> ReceiverStream::apply(const Create& create) {
                   create.seq,
                   create.file_id,
                   0,
-                  NackReason::IoError,
+                  EM_NackReason::IO_ERROR,
                   "failed to create target file");
     }
   }
@@ -268,15 +268,15 @@ std::optional<Nack> ReceiverStream::apply(const Create& create) {
   state_.next_create_file_id = create.file_id + 1;
   current_kind_ = create.kind;
   current_path_ = path;
-  if (create.kind != EntryKind::RegularFile || create.final_size == 0) {
+  if (create.kind != EM_EntryKind::REGULAR_FILE || create.final_size == 0) {
     state_.expected_seq = std::max(state_.expected_seq, create.seq + 1);
   }
   return std::nullopt;
 }
 
-std::optional<Nack> ReceiverStream::apply(const Data& data) {
+std::optional<T_Nack> T_ReceiverStream::apply(const T_Data& data) {
   if (!state_.active || data.stream_id != stream_id_) {
-    return nack(data.stream_id, data.seq, data.file_id, data.offset, NackReason::BadSession, "inactive or wrong stream");
+    return nack(data.stream_id, data.seq, data.file_id, data.offset, EM_NackReason::BAD_SESSION, "inactive or wrong stream");
   }
   if (data.seq < state_.expected_seq) {
     const bool append_resume_for_current_file =
@@ -289,25 +289,25 @@ std::optional<Nack> ReceiverStream::apply(const Data& data) {
     }
   }
   if (data.seq > state_.expected_seq) {
-    return nack(data.stream_id, data.seq, data.file_id, data.offset, NackReason::BadSeq, "future seq");
+    return nack(data.stream_id, data.seq, data.file_id, data.offset, EM_NackReason::BAD_SEQ, "future seq");
   }
   if (data.file_id != state_.current_file_id) {
-    return nack(data.stream_id, data.seq, data.file_id, data.offset, NackReason::BadFileOrder, "wrong file id");
+    return nack(data.stream_id, data.seq, data.file_id, data.offset, EM_NackReason::BAD_FILE_ORDER, "wrong file id");
   }
-  if (current_kind_ != EntryKind::RegularFile) {
-    return nack(data.stream_id, data.seq, data.file_id, data.offset, NackReason::BadFileOrder, "DATA target is not a regular file");
+  if (current_kind_ != EM_EntryKind::REGULAR_FILE) {
+    return nack(data.stream_id, data.seq, data.file_id, data.offset, EM_NackReason::BAD_FILE_ORDER, "DATA target is not a regular file");
   }
 
   const auto path = current_path_.empty() ? path_for_file(data.file_id) : current_path_;
   if (!std::filesystem::exists(path)) {
-    return nack(data.stream_id, data.seq, data.file_id, data.offset, NackReason::BadOffset, "target file missing");
+    return nack(data.stream_id, data.seq, data.file_id, data.offset, EM_NackReason::BAD_OFFSET, "target file missing");
   }
   const auto size = file_size_or_zero(path);
   if (data.offset != size) {
-    return nack(data.stream_id, data.seq, data.file_id, data.offset, NackReason::BadOffset, "offset mismatch");
+    return nack(data.stream_id, data.seq, data.file_id, data.offset, EM_NackReason::BAD_OFFSET, "offset mismatch");
   }
   if (data.raw_len == 0) {
-    return nack(data.stream_id, data.seq, data.file_id, data.offset, NackReason::DecodeError, "empty DATA");
+    return nack(data.stream_id, data.seq, data.file_id, data.offset, EM_NackReason::DECODE_ERROR, "empty DATA");
   }
   const bool restoring_final_size_from_resume =
       data.seq + 1 == state_.expected_seq &&
@@ -318,25 +318,25 @@ std::optional<Nack> ReceiverStream::apply(const Data& data) {
   if (state_.current_final_size != 0 &&
       data.final_size != state_.current_final_size &&
       !restoring_final_size_from_resume) {
-    return nack(data.stream_id, data.seq, data.file_id, data.offset, NackReason::SizeConflict, "final_size mismatch");
+    return nack(data.stream_id, data.seq, data.file_id, data.offset, EM_NackReason::SIZE_CONFLICT, "final_size mismatch");
   }
   if (data.offset + data.raw_len > data.final_size) {
-    return nack(data.stream_id, data.seq, data.file_id, data.offset, NackReason::BadOffset, "DATA exceeds final_size");
+    return nack(data.stream_id, data.seq, data.file_id, data.offset, EM_NackReason::BAD_OFFSET, "DATA exceeds final_size");
   }
 
   Bytes raw;
   try {
     raw = raw_data_for_data_message(data);
   } catch (const std::exception& ex) {
-    return nack(data.stream_id, data.seq, data.file_id, data.offset, NackReason::DecodeError, ex.what());
+    return nack(data.stream_id, data.seq, data.file_id, data.offset, EM_NackReason::DECODE_ERROR, ex.what());
   }
 
-  if (data.checksum_algo != ChecksumAlgo::Crc32c) {
+  if (data.checksum_algo != EM_ChecksumAlgo::CRC32C) {
     return nack(data.stream_id,
                 data.seq,
                 data.file_id,
                 data.offset,
-                NackReason::BadChecksum,
+                EM_NackReason::BAD_CHECKSUM,
                 "only CRC32C DATA checksum is implemented");
   }
   if (!bytes_equal(crc32c_bytes(raw), data.checksum)) {
@@ -344,17 +344,17 @@ std::optional<Nack> ReceiverStream::apply(const Data& data) {
                 data.seq,
                 data.file_id,
                 data.offset,
-                NackReason::BadChecksum,
+                EM_NackReason::BAD_CHECKSUM,
                 "DATA checksum mismatch");
   }
 
   std::ofstream output(path, std::ios::binary | std::ios::app);
   if (!output) {
-    return nack(data.stream_id, data.seq, data.file_id, data.offset, NackReason::IoError, "failed to open target file");
+    return nack(data.stream_id, data.seq, data.file_id, data.offset, EM_NackReason::IO_ERROR, "failed to open target file");
   }
   output.write(reinterpret_cast<const char*>(raw.data()), static_cast<std::streamsize>(raw.size()));
   if (!output) {
-    return nack(data.stream_id, data.seq, data.file_id, data.offset, NackReason::IoError, "failed to append target file");
+    return nack(data.stream_id, data.seq, data.file_id, data.offset, EM_NackReason::IO_ERROR, "failed to append target file");
   }
 
   state_.current_offset = data.offset + data.raw_len;
@@ -365,7 +365,7 @@ std::optional<Nack> ReceiverStream::apply(const Data& data) {
   return std::nullopt;
 }
 
-void ReceiverStream::reset_session_from_disk() {
+void T_ReceiverStream::reset_session_from_disk() {
   state_ = {};
   state_.active = true;
   state_.expected_seq = 1;
@@ -376,7 +376,7 @@ void ReceiverStream::reset_session_from_disk() {
     state_.current_offset = 0;
     state_.current_final_size = 0;
     state_.next_create_file_id = 1;
-    current_kind_ = EntryKind::RegularFile;
+    current_kind_ = EM_EntryKind::REGULAR_FILE;
     current_path_.clear();
     return;
   }
@@ -391,24 +391,24 @@ void ReceiverStream::reset_session_from_disk() {
   current_path_ = path_for_name(latest.name);
 }
 
-std::filesystem::path ReceiverStream::path_for_name(const std::string& name) const {
+std::filesystem::path T_ReceiverStream::path_for_name(const std::string& name) const {
   if (!is_safe_relative_name(name)) {
     throw std::runtime_error("unsafe receiver path: " + name);
   }
   return root_ / std::filesystem::path(name);
 }
 
-std::filesystem::path ReceiverStream::path_for_file(std::uint64_t file_id) const {
+std::filesystem::path T_ReceiverStream::path_for_file(std::uint64_t file_id) const {
   return path_from_manifest_or_legacy(stream_id_, root_, file_id);
 }
 
-Nack ReceiverStream::nack(std::uint64_t stream_id,
+T_Nack T_ReceiverStream::nack(std::uint64_t stream_id,
                           std::uint64_t got_seq,
                           std::uint64_t file_id,
                           std::uint64_t offset,
-                          NackReason reason,
+                          EM_NackReason reason,
                           std::string detail) const {
-  return Nack{stream_id,
+  return T_Nack{stream_id,
               got_seq,
               state_.expected_seq,
               file_id,
@@ -419,7 +419,7 @@ Nack ReceiverStream::nack(std::uint64_t stream_id,
               std::move(detail)};
 }
 
-struct ChunkedReceiverStream::Impl {
+struct T_ChunkedReceiverStream::Impl {
   struct ActiveFile {
     std::uint64_t seq = 0;
     std::uint64_t file_id = 0;
@@ -427,10 +427,10 @@ struct ChunkedReceiverStream::Impl {
     std::uint64_t final_size = 0;
     std::uint64_t chunk_size = kDefaultChunkSizeBytes;
     std::uint64_t chunk_count = 0;
-    FileChecksum file_checksum;
+    T_FileChecksum file_checksum;
     std::uint64_t prev_file_id = 0;
     std::uint64_t prev_final_size = 0;
-    FileChecksum prev_checksum;
+    T_FileChecksum prev_checksum;
     std::filesystem::path temp_path;
     std::filesystem::path final_path;
     std::vector<bool> received;
@@ -457,7 +457,7 @@ struct ChunkedReceiverStream::Impl {
     return root / std::filesystem::path(name);
   }
 
-  std::filesystem::path final_path_for(const FileBegin& begin) const {
+  std::filesystem::path final_path_for(const T_FileBegin& begin) const {
     return final_path_for(begin.file_id, begin.name);
   }
 
@@ -465,12 +465,12 @@ struct ChunkedReceiverStream::Impl {
     return temp_root / (std::to_string(seq) + "_" + file_name_for_id(file_id) + ".tmp");
   }
 
-  std::filesystem::path temp_path_for(const FileBegin& begin) const {
+  std::filesystem::path temp_path_for(const T_FileBegin& begin) const {
     return temp_path_for(begin.seq, begin.file_id);
   }
 
-  ChunkCommitTask make_commit_task(const ActiveFile& active) const {
-    return ChunkCommitTask{
+  T_ChunkCommitTask make_commit_task(const ActiveFile& active) const {
+    return T_ChunkCommitTask{
         .root = root,
         .temp_root = temp_root,
         .temp_path = active.temp_path,
@@ -505,13 +505,13 @@ struct ChunkedReceiverStream::Impl {
     }
   }
 
-  ChunkCommitTask prepare_commit_task(ActiveFile& file) {
+  T_ChunkCommitTask prepare_commit_task(ActiveFile& file) {
     file.commit_pending = true;
     return make_commit_task(file);
   }
 
-  Nack nack(const FileBegin& begin, NackReason reason, std::string detail) const {
-    return Nack{begin.stream_id,
+  T_Nack nack(const T_FileBegin& begin, EM_NackReason reason, std::string detail) const {
+    return T_Nack{begin.stream_id,
                 begin.seq,
                 expected_seq,
                 begin.file_id,
@@ -522,8 +522,8 @@ struct ChunkedReceiverStream::Impl {
                 std::move(detail)};
   }
 
-  Nack nack(const Chunk& chunk, NackReason reason, std::string detail) const {
-    return Nack{chunk.stream_id,
+  T_Nack nack(const T_Chunk& chunk, EM_NackReason reason, std::string detail) const {
+    return T_Nack{chunk.stream_id,
                 chunk.seq,
                 expected_seq,
                 chunk.file_id,
@@ -534,8 +534,8 @@ struct ChunkedReceiverStream::Impl {
                 std::move(detail)};
   }
 
-  Nack nack(const FileCommit& commit, NackReason reason, std::string detail) const {
-    return Nack{commit.stream_id,
+  T_Nack nack(const T_FileCommit& commit, EM_NackReason reason, std::string detail) const {
+    return T_Nack{commit.stream_id,
                 commit.seq,
                 expected_seq,
                 commit.file_id,
@@ -555,58 +555,58 @@ struct ChunkedReceiverStream::Impl {
   std::unordered_map<std::uint64_t, ActiveFile> active;
 };
 
-ChunkedReceiverStream::ChunkedReceiverStream(std::uint64_t stream_id, std::filesystem::path root)
+T_ChunkedReceiverStream::T_ChunkedReceiverStream(std::uint64_t stream_id, std::filesystem::path root)
     : impl_(std::make_unique<Impl>(stream_id, std::move(root))) {}
 
-ChunkedReceiverStream::~ChunkedReceiverStream() = default;
+T_ChunkedReceiverStream::~T_ChunkedReceiverStream() = default;
 
-ChunkedReceiverStream::ChunkedReceiverStream(ChunkedReceiverStream&&) noexcept = default;
+T_ChunkedReceiverStream::T_ChunkedReceiverStream(T_ChunkedReceiverStream&&) noexcept = default;
 
-ChunkedReceiverStream& ChunkedReceiverStream::operator=(ChunkedReceiverStream&&) noexcept = default;
+T_ChunkedReceiverStream& T_ChunkedReceiverStream::operator=(T_ChunkedReceiverStream&&) noexcept = default;
 
-std::uint64_t ChunkedReceiverStream::expected_seq() const noexcept {
+std::uint64_t T_ChunkedReceiverStream::expected_seq() const noexcept {
   return impl_->expected_seq;
 }
 
-void ChunkedReceiverStream::refresh_committed_from_disk() {
+void T_ChunkedReceiverStream::refresh_committed_from_disk() {
   impl_->refresh_committed_from_disk();
 }
 
-std::optional<Nack> ChunkedReceiverStream::prepare_commit(const FileCommit& commit,
-                                                          ChunkCommitTask& task) {
+std::optional<T_Nack> T_ChunkedReceiverStream::prepare_commit(const T_FileCommit& commit,
+                                                          T_ChunkCommitTask& task) {
   if (commit.stream_id != impl_->stream_id) {
-    return impl_->nack(commit, NackReason::BadSession, "wrong stream");
+    return impl_->nack(commit, EM_NackReason::BAD_SESSION, "wrong stream");
   }
   if (commit.seq < impl_->expected_seq) {
     return std::nullopt;
   }
   if (commit.seq > impl_->expected_seq) {
-    return impl_->nack(commit, NackReason::BadSeq, "future seq");
+    return impl_->nack(commit, EM_NackReason::BAD_SEQ, "future seq");
   }
 
   auto it = impl_->active.find(commit.seq);
   if (it == impl_->active.end()) {
-    return impl_->nack(commit, NackReason::BadCommit, "commit received before FILE_BEGIN");
+    return impl_->nack(commit, EM_NackReason::BAD_COMMIT, "commit received before FILE_BEGIN");
   }
   auto& active = it->second;
   if (commit.file_id != active.file_id) {
-    return impl_->nack(commit, NackReason::BadFileOrder, "commit file_id mismatch");
+    return impl_->nack(commit, EM_NackReason::BAD_FILE_ORDER, "commit file_id mismatch");
   }
   if (active.commit_pending) {
-    return impl_->nack(commit, NackReason::BadCommit, "commit already pending");
+    return impl_->nack(commit, EM_NackReason::BAD_COMMIT, "commit already pending");
   }
   if (active.received_count != active.chunk_count) {
-    return impl_->nack(commit, NackReason::BadCommit, "not all chunks have been received");
+    return impl_->nack(commit, EM_NackReason::BAD_COMMIT, "not all chunks have been received");
   }
   if (std::filesystem::exists(active.final_path)) {
-    return impl_->nack(commit, NackReason::FileExists, "final file already exists");
+    return impl_->nack(commit, EM_NackReason::FILE_EXISTS, "final file already exists");
   }
 
   task = impl_->prepare_commit_task(active);
   return std::nullopt;
 }
 
-void ChunkedReceiverStream::abort_commit(std::uint64_t seq) noexcept {
+void T_ChunkedReceiverStream::abort_commit(std::uint64_t seq) noexcept {
   if (!impl_) {
     return;
   }
@@ -617,7 +617,7 @@ void ChunkedReceiverStream::abort_commit(std::uint64_t seq) noexcept {
   it->second.commit_pending = false;
 }
 
-void ChunkedReceiverStream::finish_commit(const ChunkCommitResult& result) {
+void T_ChunkedReceiverStream::finish_commit(const T_ChunkCommitResult& result) {
   if (result.stream_id != impl_->stream_id) {
     throw std::runtime_error("commit result stream mismatch");
   }
@@ -635,7 +635,7 @@ void ChunkedReceiverStream::finish_commit(const ChunkCommitResult& result) {
   impl_->active.erase(it);
 }
 
-ChunkCommitResult ChunkedReceiverStream::write_commit_task(const ChunkCommitTask& task) {
+T_ChunkCommitResult T_ChunkedReceiverStream::write_commit_task(const T_ChunkCommitTask& task) {
   if (!checksum_matches(task.file_checksum, task.temp_path)) {
     throw std::runtime_error("final file checksum mismatch");
   }
@@ -659,7 +659,7 @@ ChunkCommitResult ChunkedReceiverStream::write_commit_task(const ChunkCommitTask
   fsync_directory(task.final_path.parent_path());
   fsync_directory(task.temp_root);
 
-  return ChunkCommitResult{
+  return T_ChunkCommitResult{
       .stream_id = task.stream_id,
       .seq = task.seq,
       .file_id = task.file_id,
@@ -668,9 +668,9 @@ ChunkCommitResult ChunkedReceiverStream::write_commit_task(const ChunkCommitTask
   };
 }
 
-std::vector<MissingChunkRange> ChunkedReceiverStream::missing_ranges(std::uint64_t seq,
+std::vector<T_MissingChunkRange> T_ChunkedReceiverStream::missing_ranges(std::uint64_t seq,
                                                                      std::uint64_t max_ranges) const {
-  std::vector<MissingChunkRange> ranges;
+  std::vector<T_MissingChunkRange> ranges;
   if (max_ranges == 0) {
     return ranges;
   }
@@ -704,7 +704,7 @@ std::vector<MissingChunkRange> ChunkedReceiverStream::missing_ranges(std::uint64
     while (index < highest_received && !active.received[static_cast<std::size_t>(index)]) {
       ++index;
     }
-    ranges.push_back(MissingChunkRange{
+    ranges.push_back(T_MissingChunkRange{
         .seq = active.seq,
         .file_id = active.file_id,
         .first_chunk_index = first,
@@ -714,24 +714,24 @@ std::vector<MissingChunkRange> ChunkedReceiverStream::missing_ranges(std::uint64
   return ranges;
 }
 
-std::optional<Nack> ChunkedReceiverStream::apply(const FileBegin& begin) {
+std::optional<T_Nack> T_ChunkedReceiverStream::apply(const T_FileBegin& begin) {
   if (begin.stream_id != impl_->stream_id) {
-    return impl_->nack(begin, NackReason::BadSession, "wrong stream");
+    return impl_->nack(begin, EM_NackReason::BAD_SESSION, "wrong stream");
   }
   if (begin.seq < impl_->expected_seq) {
     return std::nullopt;
   }
   if (begin.seq > impl_->expected_seq) {
-    return impl_->nack(begin, NackReason::BadSeq, "future seq");
+    return impl_->nack(begin, EM_NackReason::BAD_SEQ, "future seq");
   }
   if (!should_use_chunk_mode(begin.final_size)) {
-    return impl_->nack(begin, NackReason::BadChunk, "file size does not require chunk mode");
+    return impl_->nack(begin, EM_NackReason::BAD_CHUNK, "file size does not require chunk mode");
   }
   if (begin.chunk_size == 0) {
-    return impl_->nack(begin, NackReason::BadChunk, "chunk_size must be non-zero");
+    return impl_->nack(begin, EM_NackReason::BAD_CHUNK, "chunk_size must be non-zero");
   }
   if (begin.chunk_count != chunk_count_for_size(begin.final_size, begin.chunk_size)) {
-    return impl_->nack(begin, NackReason::BadChunk, "chunk_count does not match final_size");
+    return impl_->nack(begin, EM_NackReason::BAD_CHUNK, "chunk_count does not match final_size");
   }
   if (impl_->active.find(begin.seq) != impl_->active.end()) {
     return std::nullopt;
@@ -740,14 +740,14 @@ std::optional<Nack> ChunkedReceiverStream::apply(const FileBegin& begin) {
   if (begin.prev_file_id != 0) {
     const auto prev_path = path_from_manifest_or_legacy(begin.stream_id, impl_->root, begin.prev_file_id);
     if (!std::filesystem::exists(prev_path)) {
-      return impl_->nack(begin, NackReason::PrevFileIncomplete, "previous file does not exist");
+      return impl_->nack(begin, EM_NackReason::PREV_FILE_INCOMPLETE, "previous file does not exist");
     }
     const auto prev_size = file_size_or_zero(prev_path);
     if (prev_size != begin.prev_final_size) {
-      return impl_->nack(begin, NackReason::PrevFileIncomplete, "previous file size mismatch");
+      return impl_->nack(begin, EM_NackReason::PREV_FILE_INCOMPLETE, "previous file size mismatch");
     }
     if (!checksum_matches(begin.prev_checksum, prev_path)) {
-      return impl_->nack(begin, NackReason::ChecksumMismatch, "previous file checksum mismatch");
+      return impl_->nack(begin, EM_NackReason::CHECKSUM_MISMATCH, "previous file checksum mismatch");
     }
   }
 
@@ -755,17 +755,17 @@ std::optional<Nack> ChunkedReceiverStream::apply(const FileBegin& begin) {
   try {
     final_path = impl_->final_path_for(begin);
   } catch (const std::exception& ex) {
-    return impl_->nack(begin, NackReason::BadCreate, ex.what());
+    return impl_->nack(begin, EM_NackReason::BAD_CREATE, ex.what());
   }
   if (std::filesystem::exists(final_path)) {
-    return impl_->nack(begin, NackReason::FileExists, "final file already exists");
+    return impl_->nack(begin, EM_NackReason::FILE_EXISTS, "final file already exists");
   }
 
   auto temp_path = impl_->temp_path_for(begin);
   {
     std::ofstream temp(temp_path, std::ios::binary | std::ios::trunc);
     if (!temp) {
-      return impl_->nack(begin, NackReason::IoError, "failed to create chunk temp file");
+      return impl_->nack(begin, EM_NackReason::IO_ERROR, "failed to create chunk temp file");
     }
   }
 
@@ -787,38 +787,38 @@ std::optional<Nack> ChunkedReceiverStream::apply(const FileBegin& begin) {
   return std::nullopt;
 }
 
-std::optional<Nack> ChunkedReceiverStream::apply(const Chunk& chunk) {
+std::optional<T_Nack> T_ChunkedReceiverStream::apply(const T_Chunk& chunk) {
   if (chunk.stream_id != impl_->stream_id) {
-    return impl_->nack(chunk, NackReason::BadSession, "wrong stream");
+    return impl_->nack(chunk, EM_NackReason::BAD_SESSION, "wrong stream");
   }
   if (chunk.seq < impl_->expected_seq) {
     return std::nullopt;
   }
   if (chunk.seq > impl_->expected_seq) {
-    return impl_->nack(chunk, NackReason::BadSeq, "future seq");
+    return impl_->nack(chunk, EM_NackReason::BAD_SEQ, "future seq");
   }
 
   auto it = impl_->active.find(chunk.seq);
   if (it == impl_->active.end()) {
-    return impl_->nack(chunk, NackReason::BadChunk, "chunk received before FILE_BEGIN");
+    return impl_->nack(chunk, EM_NackReason::BAD_CHUNK, "chunk received before FILE_BEGIN");
   }
 
   auto& active = it->second;
   if (chunk.file_id != active.file_id) {
-    return impl_->nack(chunk, NackReason::BadFileOrder, "chunk file_id mismatch");
+    return impl_->nack(chunk, EM_NackReason::BAD_FILE_ORDER, "chunk file_id mismatch");
   }
   if (chunk.chunk_index >= active.chunk_count) {
-    return impl_->nack(chunk, NackReason::BadChunk, "chunk_index out of range");
+    return impl_->nack(chunk, EM_NackReason::BAD_CHUNK, "chunk_index out of range");
   }
 
   const auto expected_offset = chunk.chunk_index * active.chunk_size;
   if (chunk.offset != expected_offset) {
-    return impl_->nack(chunk, NackReason::BadOffset, "chunk offset mismatch");
+    return impl_->nack(chunk, EM_NackReason::BAD_OFFSET, "chunk offset mismatch");
   }
   const auto expected_len = static_cast<std::uint32_t>(
       std::min<std::uint64_t>(active.chunk_size, active.final_size - chunk.offset));
   if (chunk.raw_len != expected_len || chunk.offset + chunk.raw_len > active.final_size) {
-    return impl_->nack(chunk, NackReason::BadChunk, "chunk raw_len mismatch");
+    return impl_->nack(chunk, EM_NackReason::BAD_CHUNK, "chunk raw_len mismatch");
   }
   if (active.received[static_cast<std::size_t>(chunk.chunk_index)]) {
     return std::nullopt;
@@ -828,23 +828,23 @@ std::optional<Nack> ChunkedReceiverStream::apply(const Chunk& chunk) {
   try {
     raw = raw_data_for_chunk_message(chunk);
   } catch (const std::exception& ex) {
-    return impl_->nack(chunk, NackReason::DecodeError, ex.what());
+    return impl_->nack(chunk, EM_NackReason::DECODE_ERROR, ex.what());
   }
-  if (chunk.checksum_algo != ChecksumAlgo::Crc32c) {
-    return impl_->nack(chunk, NackReason::BadChecksum, "only CRC32C CHUNK checksum is implemented");
+  if (chunk.checksum_algo != EM_ChecksumAlgo::CRC32C) {
+    return impl_->nack(chunk, EM_NackReason::BAD_CHECKSUM, "only CRC32C CHUNK checksum is implemented");
   }
   if (!bytes_equal(crc32c_bytes(raw), chunk.checksum)) {
-    return impl_->nack(chunk, NackReason::BadChecksum, "CHUNK checksum mismatch");
+    return impl_->nack(chunk, EM_NackReason::BAD_CHECKSUM, "CHUNK checksum mismatch");
   }
 
   std::fstream temp(active.temp_path, std::ios::binary | std::ios::in | std::ios::out);
   if (!temp) {
-    return impl_->nack(chunk, NackReason::IoError, "failed to open chunk temp file");
+    return impl_->nack(chunk, EM_NackReason::IO_ERROR, "failed to open chunk temp file");
   }
   temp.seekp(static_cast<std::streamoff>(chunk.offset), std::ios::beg);
   temp.write(reinterpret_cast<const char*>(raw.data()), static_cast<std::streamsize>(raw.size()));
   if (!temp) {
-    return impl_->nack(chunk, NackReason::IoError, "failed to write chunk temp file");
+    return impl_->nack(chunk, EM_NackReason::IO_ERROR, "failed to write chunk temp file");
   }
 
   active.received[static_cast<std::size_t>(chunk.chunk_index)] = true;
@@ -852,17 +852,17 @@ std::optional<Nack> ChunkedReceiverStream::apply(const Chunk& chunk) {
   return std::nullopt;
 }
 
-std::optional<Nack> ChunkedReceiverStream::apply(const FileCommit& commit) {
-  ChunkCommitTask task;
+std::optional<T_Nack> T_ChunkedReceiverStream::apply(const T_FileCommit& commit) {
+  T_ChunkCommitTask task;
   auto result = prepare_commit(commit, task);
   if (result.has_value() || task.seq == 0) {
     return result;
   }
   try {
-    finish_commit(ChunkedReceiverStream::write_commit_task(task));
+    finish_commit(T_ChunkedReceiverStream::write_commit_task(task));
   } catch (const std::exception& ex) {
     abort_commit(commit.seq);
-    return impl_->nack(commit, NackReason::IoError, ex.what());
+    return impl_->nack(commit, EM_NackReason::IO_ERROR, ex.what());
   }
   return std::nullopt;
 }

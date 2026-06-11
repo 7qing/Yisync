@@ -8,11 +8,11 @@
 
 namespace {
 
-yisync::LineConfig line_config(yisync::LineId id) {
-  return yisync::LineConfig{
+yisync::T_LineConfig line_config(yisync::LineId id) {
+  return yisync::T_LineConfig{
       .id = id,
       .name = "line-" + std::to_string(id),
-      .limiter = yisync::TokenBucketConfig{
+      .limiter = yisync::T_TokenBucketConfig{
           .tokens_per_tick = 1024 * 1024,
           .capacity = 1024 * 1024,
           .tick = std::chrono::milliseconds(10),
@@ -26,40 +26,40 @@ yisync::LineConfig line_config(yisync::LineId id) {
 }  // namespace
 
 TEST(NetworkSchedulerTest, DoesNotUseLineBeforeHelloNegotiation) {
-  yisync::MultiLineScheduler scheduler({line_config(1)});
+  yisync::T_MultiLineScheduler scheduler({line_config(1)});
   scheduler.on_line_connected(1);
 
-  const auto grant_before = scheduler.try_acquire(yisync::SendRequest{
+  const auto grant_before = scheduler.try_acquire(yisync::T_SendRequest{
       .stream_id = 9001,
       .file_id = 1,
       .seq = 1,
       .bytes = 1024,
-      .kind = yisync::SendKind::Chunk,
+      .kind = yisync::EM_SendKind::CHUNK,
   });
   EXPECT_FALSE(grant_before.has_value());
 
   scheduler.on_line_negotiated(1, 1024 * 1024);
-  const auto grant_after = scheduler.try_acquire(yisync::SendRequest{
+  const auto grant_after = scheduler.try_acquire(yisync::T_SendRequest{
       .stream_id = 9001,
       .file_id = 1,
       .seq = 1,
       .bytes = 1024,
-      .kind = yisync::SendKind::Chunk,
+      .kind = yisync::EM_SendKind::CHUNK,
   });
   ASSERT_TRUE(grant_after.has_value());
   EXPECT_EQ(grant_after->line_id, 1U);
 }
 
 TEST(NetworkSchedulerTest, DisconnectTurnsPendingIntoLostSends) {
-  yisync::MultiLineScheduler scheduler({line_config(1)});
+  yisync::T_MultiLineScheduler scheduler({line_config(1)});
   scheduler.on_line_connected(1);
   scheduler.on_line_negotiated(1, 1024 * 1024);
-  ASSERT_TRUE(scheduler.try_acquire(yisync::SendRequest{
+  ASSERT_TRUE(scheduler.try_acquire(yisync::T_SendRequest{
       .stream_id = 9001,
       .file_id = 42,
       .seq = 3,
       .bytes = 4096,
-      .kind = yisync::SendKind::Chunk,
+      .kind = yisync::EM_SendKind::CHUNK,
       .chunk_index = 7,
   }).has_value());
 
@@ -72,25 +72,25 @@ TEST(NetworkSchedulerTest, DisconnectTurnsPendingIntoLostSends) {
 }
 
 TEST(NetworkSchedulerTest, HeartbeatClearsPendingAndKeepsLineHealthy) {
-  yisync::MultiLineScheduler scheduler({line_config(1)});
+  yisync::T_MultiLineScheduler scheduler({line_config(1)});
   scheduler.on_line_connected(1);
   scheduler.on_line_negotiated(1, 1024 * 1024);
-  ASSERT_TRUE(scheduler.try_acquire(yisync::SendRequest{
+  ASSERT_TRUE(scheduler.try_acquire(yisync::T_SendRequest{
       .stream_id = 9001,
       .file_id = 42,
       .seq = 3,
       .bytes = 4096,
-      .kind = yisync::SendKind::Chunk,
+      .kind = yisync::EM_SendKind::CHUNK,
       .chunk_index = 2,
   }).has_value());
 
-  scheduler.on_heartbeat(1, yisync::Heartbeat{
+  scheduler.on_heartbeat(1, yisync::T_Heartbeat{
       .stream_id = 9001,
       .next_seq = 3,
       .file_id = 42,
       .recv_window_bytes = 1024 * 1024,
       .received_chunks = {
-          yisync::ReceivedChunk{.seq = 3, .file_id = 42, .chunk_index = 2},
+          yisync::T_ReceivedChunk{.seq = 3, .file_id = 42, .chunk_index = 2},
       },
   });
 
@@ -104,15 +104,15 @@ TEST(NetworkSchedulerTest, HeartbeatClearsPendingAndKeepsLineHealthy) {
 }
 
 TEST(NetworkSchedulerTest, HeartbeatTimeoutMarksLineStale) {
-  yisync::MultiLineScheduler scheduler({line_config(1)});
+  yisync::T_MultiLineScheduler scheduler({line_config(1)});
   scheduler.on_line_connected(1);
   scheduler.on_line_negotiated(1, 1024 * 1024);
-  ASSERT_TRUE(scheduler.try_acquire(yisync::SendRequest{
+  ASSERT_TRUE(scheduler.try_acquire(yisync::T_SendRequest{
       .stream_id = 9001,
       .file_id = 42,
       .seq = 3,
       .bytes = 4096,
-      .kind = yisync::SendKind::Data,
+      .kind = yisync::EM_SendKind::DATA,
       .end_offset = 4096,
   }).has_value());
 

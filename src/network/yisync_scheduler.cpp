@@ -7,7 +7,7 @@
 
 namespace yisync {
 
-TokenBucket::TokenBucket(TokenBucketConfig config)
+TokenBucket::TokenBucket(T_TokenBucketConfig config)
     : config_(config), tokens_(config.capacity) {
   if (config_.tick.count() <= 0) {
     throw std::invalid_argument("token bucket tick must be positive");
@@ -54,7 +54,7 @@ bool TokenBucket::try_consume(std::uint64_t bytes) noexcept {
   return true;
 }
 
-MultiLineScheduler::MultiLineScheduler(std::vector<LineConfig> configs) {
+T_MultiLineScheduler::T_MultiLineScheduler(std::vector<T_LineConfig> configs) {
   if (configs.empty()) {
     throw std::invalid_argument("at least one line is required");
   }
@@ -78,7 +78,7 @@ MultiLineScheduler::MultiLineScheduler(std::vector<LineConfig> configs) {
   }
 }
 
-void MultiLineScheduler::refill_ticks(std::uint64_t ticks) {
+void T_MultiLineScheduler::refill_ticks(std::uint64_t ticks) {
   for (auto& line : lines_) {
     line.bucket.refill_ticks(ticks);
     if (!line.connected || ticks == 0) {
@@ -94,7 +94,7 @@ void MultiLineScheduler::refill_ticks(std::uint64_t ticks) {
   }
 }
 
-std::optional<SendGrant> MultiLineScheduler::try_acquire(const SendRequest& request) {
+std::optional<T_SendGrant> T_MultiLineScheduler::try_acquire(const T_SendRequest& request) {
   if (request.bytes == 0) {
     return std::nullopt;
   }
@@ -137,7 +137,7 @@ std::optional<SendGrant> MultiLineScheduler::try_acquire(const SendRequest& requ
     best->stale = false;
   }
   best->inflight_bytes += request.bytes;
-  best->pending.push_back(LineState::PendingSend{
+  best->pending.push_back(LineState::T_PendingSend{
       .kind = request.kind,
       .stream_id = request.stream_id,
       .file_id = request.file_id,
@@ -147,10 +147,10 @@ std::optional<SendGrant> MultiLineScheduler::try_acquire(const SendRequest& requ
       .chunk_index = request.chunk_index,
       .bytes = request.bytes,
   });
-  return SendGrant{best->config.id, request.bytes};
+  return T_SendGrant{best->config.id, request.bytes};
 }
 
-void MultiLineScheduler::on_line_connected(LineId line_id) {
+void T_MultiLineScheduler::on_line_connected(LineId line_id) {
   auto* line = find_line(line_id);
   if (line == nullptr) {
     throw std::invalid_argument("unknown line id");
@@ -165,7 +165,7 @@ void MultiLineScheduler::on_line_connected(LineId line_id) {
   clear_inflight(*line);
 }
 
-void MultiLineScheduler::on_line_negotiated(LineId line_id, std::uint64_t recv_window_bytes) {
+void T_MultiLineScheduler::on_line_negotiated(LineId line_id, std::uint64_t recv_window_bytes) {
   auto* line = find_line(line_id);
   if (line == nullptr) {
     throw std::invalid_argument("unknown line id");
@@ -182,7 +182,7 @@ void MultiLineScheduler::on_line_negotiated(LineId line_id, std::uint64_t recv_w
                                 : recv_window_bytes;
 }
 
-void MultiLineScheduler::on_line_disconnected(LineId line_id) {
+void T_MultiLineScheduler::on_line_disconnected(LineId line_id) {
   auto* line = find_line(line_id);
   if (line == nullptr) {
     throw std::invalid_argument("unknown line id");
@@ -195,7 +195,7 @@ void MultiLineScheduler::on_line_disconnected(LineId line_id) {
   clear_inflight(*line);
 }
 
-void MultiLineScheduler::on_line_protocol_error(LineId line_id) {
+void T_MultiLineScheduler::on_line_protocol_error(LineId line_id) {
   auto* line = find_line(line_id);
   if (line == nullptr) {
     throw std::invalid_argument("unknown line id");
@@ -208,7 +208,7 @@ void MultiLineScheduler::on_line_protocol_error(LineId line_id) {
   clear_inflight(*line);
 }
 
-void MultiLineScheduler::on_line_failure(LineId line_id) {
+void T_MultiLineScheduler::on_line_failure(LineId line_id) {
   auto* line = find_line(line_id);
   if (line == nullptr) {
     throw std::invalid_argument("unknown line id");
@@ -219,17 +219,17 @@ void MultiLineScheduler::on_line_failure(LineId line_id) {
   clear_inflight(*line);
 }
 
-void MultiLineScheduler::on_heartbeat(LineId line_id, const Heartbeat& heartbeat) {
+void T_MultiLineScheduler::on_heartbeat(LineId line_id, const T_Heartbeat& heartbeat) {
   auto* line = find_line(line_id);
   if (line == nullptr) {
     throw std::invalid_argument("unknown line id");
   }
   std::uint64_t completed_bytes = 0;
   auto& pending = line->pending;
-  const auto chunk_completed = [&](const LineState::PendingSend& send) {
+  const auto chunk_completed = [&](const LineState::T_PendingSend& send) {
     return std::any_of(heartbeat.received_chunks.begin(),
                        heartbeat.received_chunks.end(),
-                       [&](const ReceivedChunk& chunk) {
+                       [&](const T_ReceivedChunk& chunk) {
                          return send.stream_id == heartbeat.stream_id &&
                                 send.file_id == chunk.file_id &&
                                 send.seq == chunk.seq &&
@@ -238,15 +238,15 @@ void MultiLineScheduler::on_heartbeat(LineId line_id, const Heartbeat& heartbeat
   };
   pending.erase(std::remove_if(pending.begin(), pending.end(), [&](const auto& send) {
                   bool completed = false;
-                  if (send.kind == SendKind::Chunk) {
+                  if (send.kind == EM_SendKind::CHUNK) {
                     completed = chunk_completed(send);
-                  } else if (send.kind == SendKind::FileBegin ||
-                             send.kind == SendKind::FileCommit ||
-                             send.kind == SendKind::Create) {
+                  } else if (send.kind == EM_SendKind::FILE_BEGIN ||
+                             send.kind == EM_SendKind::FILE_COMMIT ||
+                             send.kind == EM_SendKind::CREATE) {
                     completed = send.stream_id == heartbeat.stream_id &&
                                 send.file_id == heartbeat.file_id &&
                                 send.seq < heartbeat.next_seq;
-                  } else if (send.kind == SendKind::Data) {
+                  } else if (send.kind == EM_SendKind::DATA) {
                     completed = send.stream_id == heartbeat.stream_id &&
                                 send.file_id == heartbeat.file_id &&
                                 (send.seq < heartbeat.next_seq ||
@@ -273,7 +273,7 @@ void MultiLineScheduler::on_heartbeat(LineId line_id, const Heartbeat& heartbeat
   line->stale = false;
 }
 
-void MultiLineScheduler::on_nack(LineId line_id) {
+void T_MultiLineScheduler::on_nack(LineId line_id) {
   auto* line = find_line(line_id);
   if (line == nullptr) {
     throw std::invalid_argument("unknown line id");
@@ -284,7 +284,7 @@ void MultiLineScheduler::on_nack(LineId line_id) {
   clear_inflight(*line);
 }
 
-std::optional<LineId> MultiLineScheduler::choose_control_line() const {
+std::optional<LineId> T_MultiLineScheduler::choose_control_line() const {
   const LineState* best = nullptr;
   std::uint64_t best_score = 0;
   for (const auto& line : lines_) {
@@ -305,11 +305,11 @@ std::optional<LineId> MultiLineScheduler::choose_control_line() const {
   return best->config.id;
 }
 
-std::vector<LineSnapshot> MultiLineScheduler::snapshots() const {
-  std::vector<LineSnapshot> result;
+std::vector<T_LineSnapshot> T_MultiLineScheduler::snapshots() const {
+  std::vector<T_LineSnapshot> result;
   result.reserve(lines_.size());
   for (const auto& line : lines_) {
-    result.push_back(LineSnapshot{
+    result.push_back(T_LineSnapshot{
         .id = line.config.id,
         .name = line.config.name,
         .tokens = line.bucket.available(),
@@ -328,27 +328,27 @@ std::vector<LineSnapshot> MultiLineScheduler::snapshots() const {
   return result;
 }
 
-std::vector<LostSend> MultiLineScheduler::take_lost_sends() {
+std::vector<T_LostSend> T_MultiLineScheduler::take_lost_sends() {
   auto result = std::move(lost_sends_);
   lost_sends_.clear();
   return result;
 }
 
-MultiLineScheduler::LineState* MultiLineScheduler::find_line(LineId line_id) {
+T_MultiLineScheduler::LineState* T_MultiLineScheduler::find_line(LineId line_id) {
   auto it = std::find_if(lines_.begin(), lines_.end(), [line_id](const auto& line) {
     return line.config.id == line_id;
   });
   return it == lines_.end() ? nullptr : &*it;
 }
 
-const MultiLineScheduler::LineState* MultiLineScheduler::find_line(LineId line_id) const {
+const T_MultiLineScheduler::LineState* T_MultiLineScheduler::find_line(LineId line_id) const {
   auto it = std::find_if(lines_.begin(), lines_.end(), [line_id](const auto& line) {
     return line.config.id == line_id;
   });
   return it == lines_.end() ? nullptr : &*it;
 }
 
-std::uint64_t MultiLineScheduler::score_line(const LineState& line, const SendRequest& request) {
+std::uint64_t T_MultiLineScheduler::score_line(const LineState& line, const T_SendRequest& request) {
   const auto window_headroom = line.recv_window_bytes - line.inflight_bytes;
   const auto token_headroom = line.bucket.available() - request.bytes;
   const auto failure_penalty = std::min<std::uint64_t>(line.consecutive_failures, 16) * 1024 * 1024;
@@ -360,9 +360,9 @@ std::uint64_t MultiLineScheduler::score_line(const LineState& line, const SendRe
   return raw_score > penalty ? raw_score - penalty : 1;
 }
 
-void MultiLineScheduler::clear_inflight(LineState& line) {
+void T_MultiLineScheduler::clear_inflight(LineState& line) {
   for (const auto& send : line.pending) {
-    lost_sends_.push_back(LostSend{
+    lost_sends_.push_back(T_LostSend{
         .line_id = line.config.id,
         .kind = send.kind,
         .stream_id = send.stream_id,

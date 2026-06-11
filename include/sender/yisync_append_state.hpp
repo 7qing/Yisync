@@ -7,7 +7,7 @@
 
 namespace yisync {
 
-struct AppendSendState {
+struct T_AppendSendState {
   bool needs_create = false;
   bool data_needed = false;
   bool create_sent = false;
@@ -22,30 +22,30 @@ struct AppendSendState {
   std::uint64_t done_next_seq = 0;
 };
 
-void reset_append_state(AppendSendState& state) noexcept;
-void reset_append_inflight(AppendSendState& state) noexcept;
-bool append_inflight(const AppendSendState& state) noexcept;
-void start_append_plan(AppendSendState& state,
-                       const SyncStart& diff,
+void reset_append_state(T_AppendSendState& state) noexcept;
+void reset_append_inflight(T_AppendSendState& state) noexcept;
+bool append_inflight(const T_AppendSendState& state) noexcept;
+void start_append_plan(T_AppendSendState& state,
+                       const T_SyncStart& diff,
                        std::uint64_t task_seq,
                        std::uint64_t source_size);
-void mark_append_create_sent(AppendSendState& state, LineId line_id) noexcept;
-void mark_append_data_sent(AppendSendState& state,
+void mark_append_create_sent(T_AppendSendState& state, LineId line_id) noexcept;
+void mark_append_data_sent(T_AppendSendState& state,
                            LineId line_id,
                            std::uint64_t data_len) noexcept;
-bool mark_append_create_ready_from_heartbeat(AppendSendState& state,
-                                             const Heartbeat& heartbeat) noexcept;
-bool mark_append_data_ready_from_heartbeat(AppendSendState& state,
-                                           const Heartbeat& heartbeat) noexcept;
-bool append_complete_by_heartbeat(const AppendSendState& state,
-                                  const Heartbeat& heartbeat,
-                                  EntryKind kind,
+bool mark_append_create_ready_from_heartbeat(T_AppendSendState& state,
+                                             const T_Heartbeat& heartbeat) noexcept;
+bool mark_append_data_ready_from_heartbeat(T_AppendSendState& state,
+                                           const T_Heartbeat& heartbeat) noexcept;
+bool append_complete_by_heartbeat(const T_AppendSendState& state,
+                                  const T_Heartbeat& heartbeat,
+                                  EM_EntryKind kind,
                                   std::uint64_t source_size) noexcept;
-void mark_append_create_retransmitted(AppendSendState& state, LineId line_id) noexcept;
-void mark_append_data_retransmitted(AppendSendState& state,
+void mark_append_create_retransmitted(T_AppendSendState& state, LineId line_id) noexcept;
+void mark_append_data_retransmitted(T_AppendSendState& state,
                                     LineId line_id,
                                     std::uint64_t offset,
                                     std::uint64_t end_offset) noexcept;
-bool append_lost_matches(const AppendSendState& state, const LostSend& lost) noexcept;
+bool append_lost_matches(const T_AppendSendState& state, const T_LostSend& lost) noexcept;
 
 }  // namespace yisync

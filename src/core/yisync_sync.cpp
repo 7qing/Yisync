@@ -68,7 +68,7 @@ Bytes crc32c_file_range(const std::filesystem::path& path,
   return crc32c_value_bytes(crc);
 }
 
-bool checksums_equal(const FileChecksum& lhs, const FileChecksum& rhs) {
+bool checksums_equal(const T_FileChecksum& lhs, const T_FileChecksum& rhs) {
   return lhs.algo == rhs.algo &&
          lhs.offset == rhs.offset &&
          lhs.len == rhs.len &&
@@ -102,20 +102,20 @@ bool top_level_dir_excluded(const std::filesystem::path& path,
   return excluded.find(name) != excluded.end();
 }
 
-bool manifest_entries_same_identity(const ManifestEntry& lhs, const ManifestEntry& rhs) {
+bool manifest_entries_same_identity(const T_ManifestEntry& lhs, const T_ManifestEntry& rhs) {
   return lhs.file_id == rhs.file_id &&
          lhs.kind == rhs.kind &&
          lhs.name == rhs.name;
 }
 
-bool manifest_entries_same_content(const ManifestEntry& sender, const ManifestEntry& receiver) {
+bool manifest_entries_same_content(const T_ManifestEntry& sender, const T_ManifestEntry& receiver) {
   if (sender.kind != receiver.kind) {
     return false;
   }
-  if (sender.kind == EntryKind::Directory) {
+  if (sender.kind == EM_EntryKind::DIRECTORY) {
     return true;
   }
-  if (sender.kind == EntryKind::Symlink) {
+  if (sender.kind == EM_EntryKind::SYMLINK) {
     return sender.link_target == receiver.link_target;
   }
   return sender.size == receiver.size && checksums_equal(sender.checksum, receiver.checksum);
@@ -123,11 +123,11 @@ bool manifest_entries_same_content(const ManifestEntry& sender, const ManifestEn
 
 }  // namespace
 
-bool checksum_matches(const FileChecksum& checksum, const std::filesystem::path& file_path) {
-  if (checksum.algo == ChecksumAlgo::None) {
+bool checksum_matches(const T_FileChecksum& checksum, const std::filesystem::path& file_path) {
+  if (checksum.algo == EM_ChecksumAlgo::NONE) {
     return checksum.len == 0;
   }
-  if (checksum.algo != ChecksumAlgo::Crc32c) {
+  if (checksum.algo != EM_ChecksumAlgo::CRC32C) {
     throw std::runtime_error("only CRC32C file checksums are implemented in this prototype");
   }
   const auto size = file_size_or_zero(file_path);
@@ -137,11 +137,11 @@ bool checksum_matches(const FileChecksum& checksum, const std::filesystem::path&
   return bytes_equal(crc32c_file_range(file_path, checksum.offset, checksum.len), checksum.value);
 }
 
-FileChecksum make_crc32c_range_checksum(const std::filesystem::path& file_path,
+T_FileChecksum make_crc32c_range_checksum(const std::filesystem::path& file_path,
                                         std::uint64_t max_len) {
   const auto size = file_size_or_zero(file_path);
-  FileChecksum checksum;
-  checksum.algo = size == 0 ? ChecksumAlgo::None : ChecksumAlgo::Crc32c;
+  T_FileChecksum checksum;
+  checksum.algo = size == 0 ? EM_ChecksumAlgo::NONE : EM_ChecksumAlgo::CRC32C;
   checksum.len = std::min(size, max_len);
   checksum.offset = size - checksum.len;
   if (checksum.len > 0) {
@@ -170,25 +170,25 @@ std::optional<std::uint64_t> parse_file_id(std::string_view name) {
   return file_id;
 }
 
-Manifest1Stream scan_manifest_stream(std::uint64_t stream_id,
+T_Manifest1Stream scan_manifest_stream(std::uint64_t stream_id,
                                       const std::filesystem::path& root,
                                       std::uint64_t checksum_range_len) {
   return scan_manifest_stream(stream_id, root, checksum_range_len, {});
 }
 
-Manifest1Stream scan_manifest_stream(std::uint64_t stream_id,
+T_Manifest1Stream scan_manifest_stream(std::uint64_t stream_id,
                                       const std::filesystem::path& root,
                                       std::uint64_t checksum_range_len,
                                       const std::vector<std::string>& excluded_top_level_dirs) {
   return scan_manifest_stream(stream_id, root, checksum_range_len, excluded_top_level_dirs, {});
 }
 
-Manifest1Stream scan_manifest_stream(std::uint64_t stream_id,
+T_Manifest1Stream scan_manifest_stream(std::uint64_t stream_id,
                                       const std::filesystem::path& root,
                                       std::uint64_t checksum_range_len,
                                       const std::vector<std::string>& excluded_top_level_dirs,
                                       std::string_view entry_name_regex) {
-  Manifest1Stream stream;
+  T_Manifest1Stream stream;
   stream.stream_id = stream_id;
   stream.root = root.string();
 
@@ -207,7 +207,7 @@ Manifest1Stream scan_manifest_stream(std::uint64_t stream_id,
       throw std::runtime_error("bad entry_name_regex for " + root.string() + ": " + ex.what());
     }
   }
-  std::vector<ManifestEntry> entries;
+  std::vector<T_ManifestEntry> entries;
   const auto options = std::filesystem::directory_options::skip_permission_denied;
   for (std::filesystem::recursive_directory_iterator it(root, options, ec), end;
        it != end;
@@ -237,7 +237,7 @@ Manifest1Stream scan_manifest_stream(std::uint64_t stream_id,
       continue;
     }
 
-    ManifestEntry manifest_entry;
+    T_ManifestEntry manifest_entry;
     manifest_entry.name = relative_name;
     if (std::filesystem::is_symlink(status)) {
       if (entry_filter.has_value() && !std::regex_search(relative_name, *entry_filter)) {
@@ -245,23 +245,23 @@ Manifest1Stream scan_manifest_stream(std::uint64_t stream_id,
         continue;
       }
       it.disable_recursion_pending();
-      manifest_entry.kind = EntryKind::Symlink;
+      manifest_entry.kind = EM_EntryKind::SYMLINK;
       manifest_entry.link_target = std::filesystem::read_symlink(it->path(), ec).generic_string();
       if (ec) {
         ec.clear();
         continue;
       }
       manifest_entry.size = 0;
-      manifest_entry.checksum = FileChecksum{};
+      manifest_entry.checksum = T_FileChecksum{};
     } else if (std::filesystem::is_directory(status)) {
-      manifest_entry.kind = EntryKind::Directory;
+      manifest_entry.kind = EM_EntryKind::DIRECTORY;
       manifest_entry.size = 0;
-      manifest_entry.checksum = FileChecksum{};
+      manifest_entry.checksum = T_FileChecksum{};
     } else if (std::filesystem::is_regular_file(status)) {
       if (entry_filter.has_value() && !std::regex_search(relative_name, *entry_filter)) {
         continue;
       }
-      manifest_entry.kind = EntryKind::RegularFile;
+      manifest_entry.kind = EM_EntryKind::REGULAR_FILE;
       manifest_entry.size = it->file_size(ec);
       if (ec) {
         ec.clear();
@@ -273,7 +273,7 @@ Manifest1Stream scan_manifest_stream(std::uint64_t stream_id,
     }
     const auto parsed_id = parse_file_id(std::filesystem::path(relative_name).filename().string());
     const auto top_level_regular_numeric =
-        manifest_entry.kind == EntryKind::RegularFile &&
+        manifest_entry.kind == EM_EntryKind::REGULAR_FILE &&
         std::filesystem::path(relative_name).parent_path().empty() &&
         parsed_id.has_value();
     manifest_entry.file_id = top_level_regular_numeric ? *parsed_id : stable_path_id(relative_name);
@@ -281,10 +281,10 @@ Manifest1Stream scan_manifest_stream(std::uint64_t stream_id,
   }
 
   std::sort(entries.begin(), entries.end(), [](const auto& lhs, const auto& rhs) {
-    const auto lhs_legacy_numeric = lhs.kind == EntryKind::RegularFile &&
+    const auto lhs_legacy_numeric = lhs.kind == EM_EntryKind::REGULAR_FILE &&
                                     lhs.file_id < (std::uint64_t{1} << 63) &&
                                     std::filesystem::path(lhs.name).parent_path().empty();
-    const auto rhs_legacy_numeric = rhs.kind == EntryKind::RegularFile &&
+    const auto rhs_legacy_numeric = rhs.kind == EM_EntryKind::REGULAR_FILE &&
                                     rhs.file_id < (std::uint64_t{1} << 63) &&
                                     std::filesystem::path(rhs.name).parent_path().empty();
     if (lhs_legacy_numeric && rhs_legacy_numeric) {
@@ -308,23 +308,23 @@ Manifest1Stream scan_manifest_stream(std::uint64_t stream_id,
   return stream;
 }
 
-std::optional<SyncStart> diff_stream(std::uint64_t stream_id,
-                                     const std::vector<ManifestEntry>& sender,
-                                     const std::vector<ManifestEntry>& receiver) {
+std::optional<T_SyncStart> diff_stream(std::uint64_t stream_id,
+                                     const std::vector<T_ManifestEntry>& sender,
+                                     const std::vector<T_ManifestEntry>& receiver) {
   std::size_t sender_i = 0;
   std::size_t receiver_i = 0;
 
   while (sender_i < sender.size()) {
     const auto& sender_entry = sender[sender_i];
     if (receiver_i >= receiver.size()) {
-      return SyncStart{stream_id, sender_entry.file_id, 0, StartAction::CreateMissing};
+      return T_SyncStart{stream_id, sender_entry.file_id, 0, EM_StartAction::CREATE_MISSING};
     }
 
     const auto& receiver_entry = receiver[receiver_i];
     if (!manifest_entries_same_identity(sender_entry, receiver_entry)) {
       throw std::runtime_error("receiver entry identity conflicts with sender for " + sender_entry.name);
     }
-    if (sender_entry.kind == EntryKind::Directory || sender_entry.kind == EntryKind::Symlink) {
+    if (sender_entry.kind == EM_EntryKind::DIRECTORY || sender_entry.kind == EM_EntryKind::SYMLINK) {
       if (!manifest_entries_same_content(sender_entry, receiver_entry)) {
         throw std::runtime_error("receiver entry content conflicts with sender for " + sender_entry.name);
       }
@@ -337,7 +337,7 @@ std::optional<SyncStart> diff_stream(std::uint64_t stream_id,
       throw std::runtime_error("receiver file is larger than sender for " + sender_entry.name);
     }
     if (receiver_entry.size < sender_entry.size) {
-      return SyncStart{stream_id, sender_entry.file_id, receiver_entry.size, StartAction::ResumeExisting};
+      return T_SyncStart{stream_id, sender_entry.file_id, receiver_entry.size, EM_StartAction::RESUME_EXISTING};
     }
     if (!bytes_equal(sender_entry.checksum.value, receiver_entry.checksum.value) ||
         sender_entry.checksum.algo != receiver_entry.checksum.algo ||
@@ -352,21 +352,21 @@ std::optional<SyncStart> diff_stream(std::uint64_t stream_id,
   return std::nullopt;
 }
 
-Manifest2Stream make_manifest2_stream(std::uint64_t stream_id,
-                                       const std::optional<SyncStart>& start) {
+T_Manifest2Stream make_manifest2_stream(std::uint64_t stream_id,
+                                       const std::optional<T_SyncStart>& start) {
   if (!start.has_value()) {
-    return Manifest2Stream{
+    return T_Manifest2Stream{
         .stream_id = stream_id,
-        .action = Manifest2Action::InSync,
+        .action = EM_Manifest2Action::IN_SYNC,
         .start_file_id = 0,
         .start_offset = 0,
     };
   }
-  return Manifest2Stream{
+  return T_Manifest2Stream{
       .stream_id = stream_id,
-      .action = start->start_action == StartAction::ResumeExisting
-                    ? Manifest2Action::ResumeExisting
-                    : Manifest2Action::CreateMissing,
+      .action = start->start_action == EM_StartAction::RESUME_EXISTING
+                    ? EM_Manifest2Action::RESUME_EXISTING
+                    : EM_Manifest2Action::CREATE_MISSING,
       .start_file_id = start->start_file_id,
       .start_offset = start->start_offset,
   };

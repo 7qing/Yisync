@@ -4,7 +4,7 @@
 
 namespace yisync {
 
-ReceiverStreamContext::ReceiverStreamContext(ReceiverStreamContext&& other) noexcept
+T_ReceiverStreamContext::T_ReceiverStreamContext(T_ReceiverStreamContext&& other) noexcept
     : stream_id(other.stream_id),
       root(std::move(other.root)),
       append(std::move(other.append)),
@@ -27,7 +27,7 @@ ReceiverStreamContext::ReceiverStreamContext(ReceiverStreamContext&& other) noex
       chunk_commit_final_path(std::move(other.chunk_commit_final_path)),
       chunk_commit_completion(std::move(other.chunk_commit_completion)) {}
 
-ReceiverStreamContext& ReceiverStreamContext::operator=(ReceiverStreamContext&& other) noexcept {
+T_ReceiverStreamContext& T_ReceiverStreamContext::operator=(T_ReceiverStreamContext&& other) noexcept {
   if (this == &other) {
     return *this;
   }
@@ -57,14 +57,14 @@ ReceiverStreamContext& ReceiverStreamContext::operator=(ReceiverStreamContext&& 
   return *this;
 }
 
-ReceiverStreamMap::ReceiverStreamMap(std::uint64_t default_stream_id,
+T_ReceiverStreamMap::T_ReceiverStreamMap(std::uint64_t default_stream_id,
                                      std::filesystem::path default_root,
                                      std::unordered_map<std::uint64_t, std::filesystem::path>* roots)
     : default_root_(std::move(default_root)),
       default_stream_id_(default_stream_id),
       roots_(roots) {}
 
-std::filesystem::path ReceiverStreamMap::stream_root_for(std::uint64_t stream_id) const {
+std::filesystem::path T_ReceiverStreamMap::stream_root_for(std::uint64_t stream_id) const {
   if (roots_ != nullptr) {
     const auto it = roots_->find(stream_id);
     if (it != roots_->end()) {
@@ -77,12 +77,12 @@ std::filesystem::path ReceiverStreamMap::stream_root_for(std::uint64_t stream_id
   return default_root_ / std::to_string(stream_id);
 }
 
-ReceiverStreamContext& ReceiverStreamMap::context_for(std::uint64_t stream_id) {
+T_ReceiverStreamContext& T_ReceiverStreamMap::context_for(std::uint64_t stream_id) {
   auto it = streams_.find(stream_id);
   if (it != streams_.end()) {
     return it->second;
   }
-  ReceiverStreamContext context;
+  T_ReceiverStreamContext context;
   context.stream_id = stream_id;
   context.root = stream_root_for(stream_id);
   std::filesystem::create_directories(context.root);
@@ -90,23 +90,23 @@ ReceiverStreamContext& ReceiverStreamMap::context_for(std::uint64_t stream_id) {
   return inserted->second;
 }
 
-ReceiverStream& ReceiverStreamMap::append_receiver_for(std::uint64_t stream_id) {
+T_ReceiverStream& T_ReceiverStreamMap::append_receiver_for(std::uint64_t stream_id) {
   auto& context = context_for(stream_id);
   if (!context.append) {
-    context.append = std::make_unique<ReceiverStream>(stream_id, context.root);
+    context.append = std::make_unique<T_ReceiverStream>(stream_id, context.root);
   }
   return *context.append;
 }
 
-ChunkedReceiverStream& ReceiverStreamMap::chunk_receiver_for(std::uint64_t stream_id) {
+T_ChunkedReceiverStream& T_ReceiverStreamMap::chunk_receiver_for(std::uint64_t stream_id) {
   auto& context = context_for(stream_id);
   if (!context.chunk) {
-    context.chunk = std::make_unique<ChunkedReceiverStream>(stream_id, context.root);
+    context.chunk = std::make_unique<T_ChunkedReceiverStream>(stream_id, context.root);
   }
   return *context.chunk;
 }
 
-bool ReceiverStreamMap::append_durable_idle() const {
+bool T_ReceiverStreamMap::append_durable_idle() const {
   for (const auto& [stream_id, context] : streams_) {
     (void)stream_id;
     if (context.append_fsync_queued || context.append_durable_target > context.append_durable_offset) {
@@ -119,7 +119,7 @@ bool ReceiverStreamMap::append_durable_idle() const {
   return true;
 }
 
-bool ReceiverStreamMap::has_pending_chunk_commit() const {
+bool T_ReceiverStreamMap::has_pending_chunk_commit() const {
   for (const auto& [stream_id, context] : streams_) {
     (void)stream_id;
     if (context.chunk_commit_queued) {
@@ -129,19 +129,19 @@ bool ReceiverStreamMap::has_pending_chunk_commit() const {
   return false;
 }
 
-ReceiverStreamMap::iterator ReceiverStreamMap::begin() noexcept {
+T_ReceiverStreamMap::iterator T_ReceiverStreamMap::begin() noexcept {
   return streams_.begin();
 }
 
-ReceiverStreamMap::iterator ReceiverStreamMap::end() noexcept {
+T_ReceiverStreamMap::iterator T_ReceiverStreamMap::end() noexcept {
   return streams_.end();
 }
 
-ReceiverStreamMap::const_iterator ReceiverStreamMap::begin() const noexcept {
+T_ReceiverStreamMap::const_iterator T_ReceiverStreamMap::begin() const noexcept {
   return streams_.begin();
 }
 
-ReceiverStreamMap::const_iterator ReceiverStreamMap::end() const noexcept {
+T_ReceiverStreamMap::const_iterator T_ReceiverStreamMap::end() const noexcept {
   return streams_.end();
 }
 

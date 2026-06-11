@@ -5,7 +5,7 @@
 #include <gtest/gtest.h>
 
 TEST(ChunkResendTest, UsesDefaultTailFirstOrderThenSequentialChunks) {
-  yisync::ChunkResendState state;
+  yisync::T_ChunkResendState state;
   yisync::initialize_chunk_resend_state(state, 3, {});
 
   EXPECT_EQ(yisync::next_chunk_to_send(state, 1, 10), 2U);
@@ -18,7 +18,7 @@ TEST(ChunkResendTest, UsesDefaultTailFirstOrderThenSequentialChunks) {
 }
 
 TEST(ChunkResendTest, MissingHintPromotesGapAfterRetransmitTicks) {
-  yisync::ChunkResendState state;
+  yisync::T_ChunkResendState state;
   yisync::initialize_chunk_resend_state(state, 3, {});
 
   (void)yisync::mark_chunk_sent(state, 2, 1, 1);
@@ -29,8 +29,8 @@ TEST(ChunkResendTest, MissingHintPromotesGapAfterRetransmitTicks) {
       state,
       9,
       4,
-      std::vector<yisync::MissingChunkRange>{
-          yisync::MissingChunkRange{
+      std::vector<yisync::T_MissingChunkRange>{
+          yisync::T_MissingChunkRange{
               .seq = 9,
               .file_id = 4,
               .first_chunk_index = 0,
@@ -48,7 +48,7 @@ TEST(ChunkResendTest, MissingHintPromotesGapAfterRetransmitTicks) {
 }
 
 TEST(ChunkResendTest, LostChunkBecomesPriorityAgain) {
-  yisync::ChunkResendState state;
+  yisync::T_ChunkResendState state;
   yisync::initialize_chunk_resend_state(state, 2, {0, 1});
 
   (void)yisync::mark_chunk_sent(state, 0, 3, 4);

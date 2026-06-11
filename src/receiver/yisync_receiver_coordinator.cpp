@@ -27,22 +27,22 @@ void copy_error(std::string_view message, std::array<char, 160>& out) {
   out[count] = '\0';
 }
 
-NackReason chunk_commit_error_reason(std::string_view error) {
+EM_NackReason chunk_commit_error_reason(std::string_view error) {
   if (error.find("checksum") != std::string_view::npos) {
-    return NackReason::ChecksumMismatch;
+    return EM_NackReason::CHECKSUM_MISMATCH;
   }
   if (error.find("already exists") != std::string_view::npos) {
-    return NackReason::FileExists;
+    return EM_NackReason::FILE_EXISTS;
   }
-  return NackReason::IoError;
+  return EM_NackReason::IO_ERROR;
 }
 
-void add_log(ReceiverActionBatch& actions, std::string text) {
-  actions.logs.push_back(ReceiverLogAction{.error = false, .text = std::move(text)});
+void add_log(T_ReceiverActionBatch& actions, std::string text) {
+  actions.logs.push_back(T_ReceiverLogAction{.error = false, .text = std::move(text)});
 }
 
-void add_error(ReceiverActionBatch& actions, std::string text) {
-  actions.logs.push_back(ReceiverLogAction{.error = true, .text = std::move(text)});
+void add_error(T_ReceiverActionBatch& actions, std::string text) {
+  actions.logs.push_back(T_ReceiverLogAction{.error = true, .text = std::move(text)});
 }
 
 std::string path_string(const std::filesystem::path& path) {
@@ -53,7 +53,7 @@ std::string path_string(const std::filesystem::path& path) {
 
 }  // namespace
 
-ReceiverCoordinator::ReceiverCoordinator(ReceiverStreamMap& streams,
+T_ReceiverCoordinator::T_ReceiverCoordinator(T_ReceiverStreamMap& streams,
                                          SpscDiskWriter& disk_writer,
                                          std::uint64_t recv_window_bytes,
                                          std::uint64_t max_missing_ranges_per_heartbeat)
@@ -62,12 +62,12 @@ ReceiverCoordinator::ReceiverCoordinator(ReceiverStreamMap& streams,
       recv_window_bytes_(recv_window_bytes),
       max_missing_ranges_per_heartbeat_(max_missing_ranges_per_heartbeat) {}
 
-ReceiverActionBatch ReceiverCoordinator::apply_create(LineId line_id, const Create& create) {
-  ReceiverActionBatch actions;
+T_ReceiverActionBatch T_ReceiverCoordinator::apply_create(LineId line_id, const T_Create& create) {
+  T_ReceiverActionBatch actions;
   auto& append_receiver = streams_.append_receiver_for(create.stream_id);
   const auto result = append_receiver.apply(create);
   if (result.has_value()) {
-    actions.nacks.push_back(ReceiverNackAction{.line_id = line_id, .nack = *result});
+    actions.nacks.push_back(T_ReceiverNackAction{.line_id = line_id, .nack = *result});
     return actions;
   }
   auto& context = streams_.context_for(create.stream_id);
@@ -75,7 +75,7 @@ ReceiverActionBatch ReceiverCoordinator::apply_create(LineId line_id, const Crea
   if (context.chunk) {
     context.chunk->refresh_committed_from_disk();
   }
-  actions.heartbeats.push_back(ReceiverHeartbeatAction{
+  actions.heartbeats.push_back(T_ReceiverHeartbeatAction{
       .line_id = line_id,
       .heartbeat = append_receiver.heartbeat(recv_window_bytes_,
                                              append_receiver.state().current_offset),
@@ -90,19 +90,19 @@ ReceiverActionBatch ReceiverCoordinator::apply_create(LineId line_id, const Crea
   return actions;
 }
 
-ReceiverActionBatch ReceiverCoordinator::apply_data(LineId line_id, const Data& data) {
-  ReceiverActionBatch actions;
+T_ReceiverActionBatch T_ReceiverCoordinator::apply_data(LineId line_id, const T_Data& data) {
+  T_ReceiverActionBatch actions;
   auto& append_receiver = streams_.append_receiver_for(data.stream_id);
   const auto result = append_receiver.apply(data);
   if (result.has_value()) {
-    actions.nacks.push_back(ReceiverNackAction{.line_id = line_id, .nack = *result});
+    actions.nacks.push_back(T_ReceiverNackAction{.line_id = line_id, .nack = *result});
     return actions;
   }
   auto& context = streams_.context_for(data.stream_id);
   context.append_heartbeat_line_id = line_id;
   reset_append_durable_context(context, data.file_id, append_receiver.current_path(), data.offset);
   maybe_enqueue_append_fsync(context, actions, append_receiver.state().current_offset);
-  actions.heartbeats.push_back(ReceiverHeartbeatAction{
+  actions.heartbeats.push_back(T_ReceiverHeartbeatAction{
       .line_id = line_id,
       .heartbeat = append_receiver.heartbeat(recv_window_bytes_, context.append_durable_offset),
   });
@@ -120,17 +120,17 @@ ReceiverActionBatch ReceiverCoordinator::apply_data(LineId line_id, const Data& 
   return actions;
 }
 
-ReceiverActionBatch ReceiverCoordinator::apply_begin(LineId line_id, const FileBegin& begin) {
-  ReceiverActionBatch actions;
+T_ReceiverActionBatch T_ReceiverCoordinator::apply_begin(LineId line_id, const T_FileBegin& begin) {
+  T_ReceiverActionBatch actions;
   auto& receiver = streams_.chunk_receiver_for(begin.stream_id);
   const auto result = receiver.apply(begin);
   if (result.has_value()) {
-    actions.nacks.push_back(ReceiverNackAction{.line_id = line_id, .nack = *result});
+    actions.nacks.push_back(T_ReceiverNackAction{.line_id = line_id, .nack = *result});
     return actions;
   }
-  actions.heartbeats.push_back(ReceiverHeartbeatAction{
+  actions.heartbeats.push_back(T_ReceiverHeartbeatAction{
       .line_id = line_id,
-      .heartbeat = Heartbeat{
+      .heartbeat = T_Heartbeat{
           .stream_id = begin.stream_id,
           .next_seq = receiver.expected_seq(),
           .file_id = begin.file_id,
@@ -149,17 +149,17 @@ ReceiverActionBatch ReceiverCoordinator::apply_begin(LineId line_id, const FileB
   return actions;
 }
 
-ReceiverActionBatch ReceiverCoordinator::apply_chunk(LineId line_id, const Chunk& chunk) {
-  ReceiverActionBatch actions;
+T_ReceiverActionBatch T_ReceiverCoordinator::apply_chunk(LineId line_id, const T_Chunk& chunk) {
+  T_ReceiverActionBatch actions;
   auto& receiver = streams_.chunk_receiver_for(chunk.stream_id);
   const auto result = receiver.apply(chunk);
   if (result.has_value()) {
-    actions.nacks.push_back(ReceiverNackAction{.line_id = line_id, .nack = *result});
+    actions.nacks.push_back(T_ReceiverNackAction{.line_id = line_id, .nack = *result});
     return actions;
   }
-  actions.heartbeats.push_back(ReceiverHeartbeatAction{
+  actions.heartbeats.push_back(T_ReceiverHeartbeatAction{
       .line_id = line_id,
-      .heartbeat = Heartbeat{
+      .heartbeat = T_Heartbeat{
           .stream_id = chunk.stream_id,
           .next_seq = receiver.expected_seq(),
           .file_id = chunk.file_id,
@@ -167,7 +167,7 @@ ReceiverActionBatch ReceiverCoordinator::apply_chunk(LineId line_id, const Chunk
           .durable_offset = 0,
           .recv_window_bytes = recv_window_bytes_,
           .received_chunks = {
-              ReceivedChunk{
+              T_ReceivedChunk{
                   .seq = chunk.seq,
                   .file_id = chunk.file_id,
                   .chunk_index = chunk.chunk_index,
@@ -187,8 +187,8 @@ ReceiverActionBatch ReceiverCoordinator::apply_chunk(LineId line_id, const Chunk
   return actions;
 }
 
-ReceiverActionBatch ReceiverCoordinator::apply_commit(LineId line_id, const FileCommit& commit) {
-  ReceiverActionBatch actions;
+T_ReceiverActionBatch T_ReceiverCoordinator::apply_commit(LineId line_id, const T_FileCommit& commit) {
+  T_ReceiverActionBatch actions;
   auto& context = streams_.context_for(commit.stream_id);
   if (context.chunk_commit_queued) {
     if (context.chunk_commit_seq == commit.seq &&
@@ -199,9 +199,9 @@ ReceiverActionBatch ReceiverCoordinator::apply_commit(LineId line_id, const File
                   " file_id=" + std::to_string(commit.file_id));
       return actions;
     }
-    actions.nacks.push_back(ReceiverNackAction{
+    actions.nacks.push_back(T_ReceiverNackAction{
         .line_id = line_id,
-        .nack = Nack{
+        .nack = T_Nack{
             .stream_id = commit.stream_id,
             .got_seq = commit.seq,
             .expected_seq = context.chunk ? context.chunk->expected_seq() : commit.seq,
@@ -209,7 +209,7 @@ ReceiverActionBatch ReceiverCoordinator::apply_commit(LineId line_id, const File
             .offset = 0,
             .expected_file_id = context.chunk_commit_file_id,
             .expected_offset = 0,
-            .reason = NackReason::BadCommit,
+            .reason = EM_NackReason::BAD_COMMIT,
             .detail = "another commit is already pending",
         },
     });
@@ -217,18 +217,18 @@ ReceiverActionBatch ReceiverCoordinator::apply_commit(LineId line_id, const File
   }
 
   auto& receiver = streams_.chunk_receiver_for(commit.stream_id);
-  ChunkCommitTask task;
+  T_ChunkCommitTask task;
   const auto result = receiver.prepare_commit(commit, task);
   if (result.has_value()) {
-    actions.nacks.push_back(ReceiverNackAction{.line_id = line_id, .nack = *result});
+    actions.nacks.push_back(T_ReceiverNackAction{.line_id = line_id, .nack = *result});
     return actions;
   }
   if (task.seq == 0) {
     if (commit.seq < receiver.expected_seq()) {
       const auto info = committed_file_info(commit.stream_id, commit.file_id);
-      actions.heartbeats.push_back(ReceiverHeartbeatAction{
+      actions.heartbeats.push_back(T_ReceiverHeartbeatAction{
           .line_id = line_id,
-          .heartbeat = Heartbeat{
+          .heartbeat = T_Heartbeat{
               .stream_id = commit.stream_id,
               .next_seq = receiver.expected_seq(),
               .file_id = commit.file_id,
@@ -254,12 +254,12 @@ ReceiverActionBatch ReceiverCoordinator::apply_commit(LineId line_id, const File
   context.chunk_commit_file_id = task.file_id;
   context.chunk_commit_final_size = task.final_size;
   context.chunk_commit_final_path = task.final_path;
-  auto completion = std::make_shared<ChunkCommitCompletion>();
+  auto completion = std::make_shared<T_ChunkCommitCompletion>();
   context.chunk_commit_completion = completion;
 
   const auto queued = disk_writer_.enqueue([task = std::move(task), completion] {
     try {
-      (void)ChunkedReceiverStream::write_commit_task(task);
+      (void)T_ChunkedReceiverStream::write_commit_task(task);
       completion->completed.store(true, std::memory_order_release);
     } catch (const std::exception& ex) {
       copy_error(ex.what(), completion->error);
@@ -269,9 +269,9 @@ ReceiverActionBatch ReceiverCoordinator::apply_commit(LineId line_id, const File
   if (!queued) {
     receiver.abort_commit(commit.seq);
     clear_chunk_commit(context);
-    actions.nacks.push_back(ReceiverNackAction{
+    actions.nacks.push_back(T_ReceiverNackAction{
         .line_id = line_id,
-        .nack = Nack{
+        .nack = T_Nack{
             .stream_id = commit.stream_id,
             .got_seq = commit.seq,
             .expected_seq = receiver.expected_seq(),
@@ -279,7 +279,7 @@ ReceiverActionBatch ReceiverCoordinator::apply_commit(LineId line_id, const File
             .offset = 0,
             .expected_file_id = commit.file_id,
             .expected_offset = 0,
-            .reason = NackReason::IoError,
+            .reason = EM_NackReason::IO_ERROR,
             .detail = "disk writer queue full while enqueueing commit",
         },
     });
@@ -296,8 +296,8 @@ ReceiverActionBatch ReceiverCoordinator::apply_commit(LineId line_id, const File
   return actions;
 }
 
-ReceiverActionBatch ReceiverCoordinator::poll_completions() {
-  ReceiverActionBatch actions;
+T_ReceiverActionBatch T_ReceiverCoordinator::poll_completions() {
+  T_ReceiverActionBatch actions;
   for (auto& [stream_id, context] : streams_) {
     (void)stream_id;
     poll_append_fsync(context, actions);
@@ -312,15 +312,15 @@ ReceiverActionBatch ReceiverCoordinator::poll_completions() {
   return actions;
 }
 
-bool ReceiverCoordinator::append_durable_idle() const {
+bool T_ReceiverCoordinator::append_durable_idle() const {
   return streams_.append_durable_idle();
 }
 
-bool ReceiverCoordinator::has_pending_chunk_commit() const {
+bool T_ReceiverCoordinator::has_pending_chunk_commit() const {
   return streams_.has_pending_chunk_commit();
 }
 
-ReceiverCoordinator::CommittedFileInfo ReceiverCoordinator::committed_file_info(
+T_ReceiverCoordinator::T_CommittedFileInfo T_ReceiverCoordinator::committed_file_info(
     std::uint64_t stream_id,
     std::uint64_t file_id) const {
   const auto root = streams_.stream_root_for(stream_id);
@@ -334,10 +334,10 @@ ReceiverCoordinator::CommittedFileInfo ReceiverCoordinator::committed_file_info(
     path = root / entry_it->name;
     size = entry_it->size;
   }
-  return CommittedFileInfo{.path = std::move(path), .size = size};
+  return T_CommittedFileInfo{.path = std::move(path), .size = size};
 }
 
-void ReceiverCoordinator::reset_append_durable_context(ReceiverStreamContext& context,
+void T_ReceiverCoordinator::reset_append_durable_context(T_ReceiverStreamContext& context,
                                                        std::uint64_t file_id,
                                                        std::filesystem::path path,
                                                        std::uint64_t durable_offset) {
@@ -358,8 +358,8 @@ void ReceiverCoordinator::reset_append_durable_context(ReceiverStreamContext& co
   std::fill(context.append_fsync_error.begin(), context.append_fsync_error.end(), '\0');
 }
 
-void ReceiverCoordinator::maybe_enqueue_append_fsync(ReceiverStreamContext& context,
-                                                     ReceiverActionBatch& actions,
+void T_ReceiverCoordinator::maybe_enqueue_append_fsync(T_ReceiverStreamContext& context,
+                                                     T_ReceiverActionBatch& actions,
                                                      std::uint64_t target_offset) {
   if (target_offset <= context.append_durable_offset) {
     return;
@@ -412,8 +412,8 @@ void ReceiverCoordinator::maybe_enqueue_append_fsync(ReceiverStreamContext& cont
   }
 }
 
-void ReceiverCoordinator::poll_append_fsync(ReceiverStreamContext& context,
-                                            ReceiverActionBatch& actions) {
+void T_ReceiverCoordinator::poll_append_fsync(T_ReceiverStreamContext& context,
+                                            T_ReceiverActionBatch& actions) {
   if (context.append_fsync_failed.load(std::memory_order_acquire)) {
     actions.failed = true;
     actions.failure = "RECEIVER append fsync failed stream=" + std::to_string(context.stream_id) +
@@ -425,7 +425,7 @@ void ReceiverCoordinator::poll_append_fsync(ReceiverStreamContext& context,
   if (completed > context.append_durable_offset) {
     context.append_durable_offset = completed;
     if (context.append && context.append_heartbeat_line_id != 0) {
-      actions.heartbeats.push_back(ReceiverHeartbeatAction{
+      actions.heartbeats.push_back(T_ReceiverHeartbeatAction{
           .line_id = context.append_heartbeat_line_id,
           .heartbeat = context.append->heartbeat(recv_window_bytes_,
                                                  context.append_durable_offset),
@@ -441,8 +441,8 @@ void ReceiverCoordinator::poll_append_fsync(ReceiverStreamContext& context,
   }
 }
 
-void ReceiverCoordinator::poll_chunk_commit(ReceiverStreamContext& context,
-                                            ReceiverActionBatch& actions) {
+void T_ReceiverCoordinator::poll_chunk_commit(T_ReceiverStreamContext& context,
+                                            T_ReceiverActionBatch& actions) {
   if (!context.chunk_commit_queued) {
     return;
   }
@@ -461,9 +461,9 @@ void ReceiverCoordinator::poll_chunk_commit(ReceiverStreamContext& context,
     if (context.chunk) {
       context.chunk->abort_commit(context.chunk_commit_seq);
     }
-    actions.nacks.push_back(ReceiverNackAction{
+    actions.nacks.push_back(T_ReceiverNackAction{
         .line_id = context.chunk_commit_line_id,
-        .nack = Nack{
+        .nack = T_Nack{
             .stream_id = context.stream_id,
             .got_seq = context.chunk_commit_seq,
             .expected_seq = context.chunk ? context.chunk->expected_seq() : context.chunk_commit_seq,
@@ -494,7 +494,7 @@ void ReceiverCoordinator::poll_chunk_commit(ReceiverStreamContext& context,
     return;
   }
 
-  ChunkCommitResult result{
+  T_ChunkCommitResult result{
       .stream_id = context.stream_id,
       .seq = context.chunk_commit_seq,
       .file_id = context.chunk_commit_file_id,
@@ -513,9 +513,9 @@ void ReceiverCoordinator::poll_chunk_commit(ReceiverStreamContext& context,
   if (context.append) {
     context.append->refresh_committed_from_disk();
   }
-  actions.heartbeats.push_back(ReceiverHeartbeatAction{
+  actions.heartbeats.push_back(T_ReceiverHeartbeatAction{
       .line_id = context.chunk_commit_line_id,
-      .heartbeat = Heartbeat{
+      .heartbeat = T_Heartbeat{
           .stream_id = context.stream_id,
           .next_seq = context.chunk->expected_seq(),
           .file_id = context.chunk_commit_file_id,
@@ -536,7 +536,7 @@ void ReceiverCoordinator::poll_chunk_commit(ReceiverStreamContext& context,
   actions.schedule_quiet_stop = true;
 }
 
-void ReceiverCoordinator::clear_chunk_commit(ReceiverStreamContext& context) {
+void T_ReceiverCoordinator::clear_chunk_commit(T_ReceiverStreamContext& context) {
   context.chunk_commit_queued = false;
   context.chunk_commit_line_id = 0;
   context.chunk_commit_seq = 0;

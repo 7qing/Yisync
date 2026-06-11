@@ -37,7 +37,7 @@ std::string read_text(const std::filesystem::path& path) {
   return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
 }
 
-void print_result(std::string_view op, const std::optional<yisync::Nack>& result) {
+void print_result(std::string_view op, const std::optional<yisync::T_Nack>& result) {
   if (!result.has_value()) {
     std::cout << op << " -> OK\n";
     return;
@@ -47,43 +47,43 @@ void print_result(std::string_view op, const std::optional<yisync::Nack>& result
             << " detail=" << nack.detail << "\n";
 }
 
-void print_heartbeat(const yisync::Heartbeat& heartbeat) {
+void print_heartbeat(const yisync::T_Heartbeat& heartbeat) {
   std::cout << "HEARTBEAT next_seq=" << heartbeat.next_seq << " file=" << heartbeat.file_id
             << " offset=" << heartbeat.offset << " durable_offset=" << heartbeat.durable_offset
             << " recv_window=" << heartbeat.recv_window_bytes << "\n";
 }
 
-yisync::Data make_data(std::uint64_t stream_id,
+yisync::T_Data make_data(std::uint64_t stream_id,
                        std::uint64_t seq,
                        std::uint64_t file_id,
                        std::uint64_t offset,
                        std::uint64_t final_size,
                        std::string_view text) {
   auto payload = bytes_from_string(text);
-  return yisync::Data{
+  return yisync::T_Data{
       .stream_id = stream_id,
       .seq = seq,
       .file_id = file_id,
       .offset = offset,
       .final_size = final_size,
       .raw_len = static_cast<std::uint32_t>(payload.size()),
-      .compression = yisync::Compression::None,
-      .checksum_algo = yisync::ChecksumAlgo::Crc32c,
+      .compression = yisync::EM_Compression::NONE,
+      .checksum_algo = yisync::EM_ChecksumAlgo::CRC32C,
       .checksum = yisync::crc32c_bytes(payload),
       .payload = std::move(payload),
   };
 }
 
-yisync::FileChecksum full_crc32c_checksum(const yisync::Bytes& bytes) {
-  return yisync::FileChecksum{
-      .algo = yisync::ChecksumAlgo::Crc32c,
+yisync::T_FileChecksum full_crc32c_checksum(const yisync::Bytes& bytes) {
+  return yisync::T_FileChecksum{
+      .algo = yisync::EM_ChecksumAlgo::CRC32C,
       .offset = 0,
       .len = static_cast<std::uint64_t>(bytes.size()),
       .value = yisync::crc32c_bytes(bytes),
   };
 }
 
-yisync::Chunk make_chunk(std::uint64_t stream_id,
+yisync::T_Chunk make_chunk(std::uint64_t stream_id,
                          std::uint64_t seq,
                          std::uint64_t file_id,
                          std::uint64_t chunk_index,
@@ -93,33 +93,33 @@ yisync::Chunk make_chunk(std::uint64_t stream_id,
   const auto len = std::min<std::uint64_t>(chunk_size, source.size() - offset);
   yisync::Bytes payload(source.begin() + static_cast<std::ptrdiff_t>(offset),
                         source.begin() + static_cast<std::ptrdiff_t>(offset + len));
-  return yisync::Chunk{
+  return yisync::T_Chunk{
       .stream_id = stream_id,
       .seq = seq,
       .file_id = file_id,
       .chunk_index = chunk_index,
       .offset = offset,
       .raw_len = static_cast<std::uint32_t>(payload.size()),
-      .compression = yisync::Compression::None,
-      .checksum_algo = yisync::ChecksumAlgo::Crc32c,
+      .compression = yisync::EM_Compression::NONE,
+      .checksum_algo = yisync::EM_ChecksumAlgo::CRC32C,
       .checksum = yisync::crc32c_bytes(payload),
       .payload = std::move(payload),
   };
 }
 
-std::uint64_t encoded_message_size(const yisync::Message& message) {
+std::uint64_t encoded_message_size(const yisync::T_Message& message) {
   return yisync::encode_frame(message).size();
 }
 
-struct TransferLine {
-  TransferLine(yisync::LineId line_id, std::string line_name)
+struct T_TransferLine {
+  T_TransferLine(yisync::LineId line_id, std::string line_name)
       : id(line_id), name(std::move(line_name)) {}
 
   yisync::LineId id = 0;
   std::string name;
 };
 
-TransferLine& find_line(std::vector<TransferLine>& lines, yisync::LineId line_id) {
+T_TransferLine& find_line(std::vector<T_TransferLine>& lines, yisync::LineId line_id) {
   auto it = std::find_if(lines.begin(), lines.end(), [line_id](const auto& line) {
     return line.id == line_id;
   });
@@ -129,8 +129,8 @@ TransferLine& find_line(std::vector<TransferLine>& lines, yisync::LineId line_id
   return *it;
 }
 
-std::vector<TransferLine> make_demo_lines(const std::vector<yisync::LineId>& line_ids) {
-  std::vector<TransferLine> lines;
+std::vector<T_TransferLine> make_demo_lines(const std::vector<yisync::LineId>& line_ids) {
+  std::vector<T_TransferLine> lines;
   lines.reserve(line_ids.size());
   for (const auto line_id : line_ids) {
     lines.emplace_back(line_id, "demo-line-" + std::to_string(line_id));
@@ -138,18 +138,18 @@ std::vector<TransferLine> make_demo_lines(const std::vector<yisync::LineId>& lin
   return lines;
 }
 
-std::optional<yisync::Nack> apply_chunk_message(const yisync::Message& message,
-                                                yisync::ChunkedReceiverStream& sink) {
-  if (const auto* begin = std::get_if<yisync::FileBegin>(&message)) {
+std::optional<yisync::T_Nack> apply_chunk_message(const yisync::T_Message& message,
+                                                yisync::T_ChunkedReceiverStream& sink) {
+  if (const auto* begin = std::get_if<yisync::T_FileBegin>(&message)) {
     return sink.apply(*begin);
   }
-  if (const auto* chunk = std::get_if<yisync::Chunk>(&message)) {
+  if (const auto* chunk = std::get_if<yisync::T_Chunk>(&message)) {
     return sink.apply(*chunk);
   }
-  if (const auto* commit = std::get_if<yisync::FileCommit>(&message)) {
+  if (const auto* commit = std::get_if<yisync::T_FileCommit>(&message)) {
     return sink.apply(*commit);
   }
-  throw std::runtime_error("message is not applicable to ChunkedReceiverStream");
+  throw std::runtime_error("message is not applicable to T_ChunkedReceiverStream");
 }
 
 void run_reconnect_demo() {
@@ -166,9 +166,9 @@ void run_reconnect_demo() {
   const auto file_path = sink_root / yisync::file_name_for_id(1);
 
   {
-    yisync::ReceiverStream sink(stream_id, sink_root);
+    yisync::T_ReceiverStream sink(stream_id, sink_root);
 
-    yisync::Create create_1{
+    yisync::T_Create create_1{
         .stream_id = stream_id,
         .seq = 1,
         .file_id = 1,
@@ -190,7 +190,7 @@ void run_reconnect_demo() {
   std::cout << "RECONNECT manifest after reconnect: file=1 offset=" << remote_offset << "\n";
 
   {
-    yisync::ReceiverStream sink(stream_id, sink_root);
+    yisync::T_ReceiverStream sink(stream_id, sink_root);
 
     const auto resume_payload = source_data.substr(static_cast<std::size_t>(remote_offset));
     const auto resume_data = make_data(stream_id, 1, 1, remote_offset, source_data.size(), resume_payload);
@@ -207,21 +207,21 @@ void run_reconnect_demo() {
 }
 
 void run_scheduler_demo() {
-  yisync::MultiLineScheduler scheduler({
-      yisync::LineConfig{
+  yisync::T_MultiLineScheduler scheduler({
+      yisync::T_LineConfig{
           .id = 1,
           .name = "line-a",
-          .limiter = yisync::TokenBucketConfig{
+          .limiter = yisync::T_TokenBucketConfig{
               .tokens_per_tick = 20 * 1024,
               .capacity = 20 * 1024,
               .tick = std::chrono::milliseconds(10),
           },
           .initial_recv_window_bytes = 64 * 1024,
       },
-      yisync::LineConfig{
+      yisync::T_LineConfig{
           .id = 2,
           .name = "line-b",
-          .limiter = yisync::TokenBucketConfig{
+          .limiter = yisync::T_TokenBucketConfig{
               .tokens_per_tick = 10 * 1024,
               .capacity = 10 * 1024,
               .tick = std::chrono::milliseconds(10),
@@ -230,7 +230,7 @@ void run_scheduler_demo() {
       },
   });
 
-  const yisync::SendRequest burst{
+  const yisync::T_SendRequest burst{
       .stream_id = 91,
       .file_id = 1,
       .seq = 1,
@@ -240,28 +240,28 @@ void run_scheduler_demo() {
   const auto blocked = scheduler.try_acquire(burst);
   std::cout << "SCHED burst 30KB immediate grant=" << blocked.has_value() << "\n";
 
-  const yisync::SendRequest chunk_1{
+  const yisync::T_SendRequest chunk_1{
       .stream_id = 91,
       .file_id = 1,
       .seq = 1,
       .bytes = 20 * 1024,
       .split_allowed = false,
   };
-  const yisync::SendRequest chunk_2{
+  const yisync::T_SendRequest chunk_2{
       .stream_id = 91,
       .file_id = 1,
       .seq = 2,
       .bytes = 20 * 1024,
       .split_allowed = false,
   };
-  const yisync::SendRequest chunk_3{
+  const yisync::T_SendRequest chunk_3{
       .stream_id = 91,
       .file_id = 1,
       .seq = 3,
       .bytes = 20 * 1024,
       .split_allowed = false,
   };
-  const yisync::SendRequest fallback_chunk{
+  const yisync::T_SendRequest fallback_chunk{
       .stream_id = 91,
       .file_id = 1,
       .seq = 4,
@@ -284,7 +284,7 @@ void run_scheduler_demo() {
             << (after_disconnect ? std::to_string(after_disconnect->line_id) : "blocked") << "\n";
 
   scheduler.on_line_connected(1);
-  scheduler.on_heartbeat(1, yisync::Heartbeat{
+  scheduler.on_heartbeat(1, yisync::T_Heartbeat{
                                  .stream_id = 91,
                                  .next_seq = 3,
                                  .file_id = 1,
@@ -310,7 +310,7 @@ void run_scheduler_demo() {
 void run_chunk_transfer_demo(std::string_view label,
                              const std::filesystem::path& base,
                              std::uint64_t stream_id,
-                             std::vector<TransferLine> lines) {
+                             std::vector<T_TransferLine> lines) {
   namespace fs = std::filesystem;
 
   constexpr std::uint64_t seq = 1;
@@ -330,21 +330,21 @@ void run_chunk_transfer_demo(std::string_view label,
             << " size=" << source_bytes.size() << " chunk_count=" << chunk_count << "\n";
 
   constexpr std::uint64_t line_budget = 96 * 1024;
-  yisync::MultiLineScheduler scheduler({
-      yisync::LineConfig{
+  yisync::T_MultiLineScheduler scheduler({
+      yisync::T_LineConfig{
           .id = 1,
           .name = "chunk-line-a",
-          .limiter = yisync::TokenBucketConfig{
+          .limiter = yisync::T_TokenBucketConfig{
               .tokens_per_tick = line_budget,
               .capacity = line_budget,
               .tick = std::chrono::milliseconds(10),
           },
           .initial_recv_window_bytes = 2 * line_budget,
       },
-      yisync::LineConfig{
+      yisync::T_LineConfig{
           .id = 2,
           .name = "chunk-line-b",
-          .limiter = yisync::TokenBucketConfig{
+          .limiter = yisync::T_TokenBucketConfig{
               .tokens_per_tick = line_budget,
               .capacity = line_budget,
               .tick = std::chrono::milliseconds(10),
@@ -360,29 +360,29 @@ void run_chunk_transfer_demo(std::string_view label,
     std::cout << label << " line ready id=" << line.id << " name=" << line.name << "\n";
   }
 
-  const auto acquire_or_wait = [&](const yisync::SendRequest& request) {
+  const auto acquire_or_wait = [&](const yisync::T_SendRequest& request) {
     for (std::uint64_t ticks = 0; ticks < 100; ++ticks) {
       if (auto grant = scheduler.try_acquire(request)) {
-        return std::pair<yisync::SendGrant, std::uint64_t>{*grant, ticks};
+        return std::pair<yisync::T_SendGrant, std::uint64_t>{*grant, ticks};
       }
       scheduler.refill_ticks(1);
     }
     throw std::runtime_error("scheduler did not grant chunk send");
   };
 
-  const auto emit_heartbeat = [&](TransferLine& line, const yisync::Heartbeat& heartbeat) {
-    const auto frame = yisync::encode_frame(yisync::Message{heartbeat});
+  const auto emit_heartbeat = [&](T_TransferLine& line, const yisync::T_Heartbeat& heartbeat) {
+    const auto frame = yisync::encode_frame(yisync::T_Message{heartbeat});
     const auto decoded = yisync::decode_message(
         yisync::decode_frame(std::span<const std::byte>(frame.data(), frame.size())));
-    const auto* decoded_heartbeat = std::get_if<yisync::Heartbeat>(&decoded);
+    const auto* decoded_heartbeat = std::get_if<yisync::T_Heartbeat>(&decoded);
     if (decoded_heartbeat == nullptr) {
       throw std::runtime_error("expected HEARTBEAT message");
     }
     scheduler.on_heartbeat(line.id, *decoded_heartbeat);
   };
 
-  yisync::ChunkedReceiverStream sink(stream_id, sink_root);
-  yisync::FileBegin begin{
+  yisync::T_ChunkedReceiverStream sink(stream_id, sink_root);
+  yisync::T_FileBegin begin{
       .stream_id = stream_id,
       .seq = seq,
       .file_id = file_id,
@@ -395,7 +395,7 @@ void run_chunk_transfer_demo(std::string_view label,
       .prev_final_size = 0,
   };
   auto& control_line = find_line(lines, 1);
-  auto begin_result = apply_chunk_message(yisync::Message{begin}, sink);
+  auto begin_result = apply_chunk_message(yisync::T_Message{begin}, sink);
   print_result(std::string(label) + " FILE_BEGIN line 1", begin_result);
   if (begin_result.has_value()) {
     throw std::runtime_error("chunk FILE_BEGIN failed");
@@ -403,20 +403,20 @@ void run_chunk_transfer_demo(std::string_view label,
 
   for (const auto chunk_index : std::vector<std::uint64_t>{2, 0, 1}) {
     auto chunk = make_chunk(stream_id, seq, file_id, chunk_index, yisync::kDefaultChunkSizeBytes, source_bytes);
-    const auto wire_bytes = encoded_message_size(yisync::Message{chunk});
-    const yisync::SendRequest request{
+    const auto wire_bytes = encoded_message_size(yisync::T_Message{chunk});
+    const yisync::T_SendRequest request{
         .stream_id = chunk.stream_id,
         .file_id = chunk.file_id,
         .seq = chunk.seq,
         .bytes = wire_bytes,
         .split_allowed = false,
-        .kind = yisync::SendKind::Chunk,
+        .kind = yisync::EM_SendKind::CHUNK,
         .chunk_index = chunk.chunk_index,
     };
 
     const auto [grant, waited_ticks] = acquire_or_wait(request);
     auto& line = find_line(lines, grant.line_id);
-    auto result = apply_chunk_message(yisync::Message{chunk}, sink);
+    auto result = apply_chunk_message(yisync::T_Message{chunk}, sink);
     std::cout << label << " scheduled index " << chunk_index
               << " line=" << grant.line_id
               << " transport=" << line.name
@@ -428,7 +428,7 @@ void run_chunk_transfer_demo(std::string_view label,
     }
 
     emit_heartbeat(line,
-                   yisync::Heartbeat{
+                   yisync::T_Heartbeat{
                        .stream_id = stream_id,
                        .next_seq = sink.expected_seq(),
                        .file_id = file_id,
@@ -436,7 +436,7 @@ void run_chunk_transfer_demo(std::string_view label,
                        .durable_offset = 0,
                        .recv_window_bytes = 2 * line_budget,
                        .received_chunks = {
-                           yisync::ReceivedChunk{
+                           yisync::T_ReceivedChunk{
                                .seq = seq,
                                .file_id = file_id,
                                .chunk_index = chunk_index,
@@ -445,23 +445,23 @@ void run_chunk_transfer_demo(std::string_view label,
                    });
   }
 
-  yisync::FileCommit commit{
+  yisync::T_FileCommit commit{
       .stream_id = stream_id,
       .seq = seq,
       .file_id = file_id,
   };
-  const auto commit_wire_bytes = encoded_message_size(yisync::Message{commit});
-  const yisync::SendRequest commit_request{
+  const auto commit_wire_bytes = encoded_message_size(yisync::T_Message{commit});
+  const yisync::T_SendRequest commit_request{
       .stream_id = commit.stream_id,
       .file_id = commit.file_id,
       .seq = commit.seq,
       .bytes = commit_wire_bytes,
       .split_allowed = false,
-      .kind = yisync::SendKind::FileCommit,
+      .kind = yisync::EM_SendKind::FILE_COMMIT,
   };
   const auto [commit_grant, commit_waited_ticks] = acquire_or_wait(commit_request);
   auto& commit_line = find_line(lines, commit_grant.line_id);
-  auto commit_result = apply_chunk_message(yisync::Message{commit}, sink);
+  auto commit_result = apply_chunk_message(yisync::T_Message{commit}, sink);
   std::cout << label << " FILE_COMMIT scheduled line=" << commit_grant.line_id
             << " transport=" << commit_line.name
             << " wire_bytes=" << commit_wire_bytes
@@ -471,7 +471,7 @@ void run_chunk_transfer_demo(std::string_view label,
     throw std::runtime_error("chunk FILE_COMMIT failed");
   }
   emit_heartbeat(commit_line,
-                 yisync::Heartbeat{
+                 yisync::T_Heartbeat{
                      .stream_id = stream_id,
                      .next_seq = sink.expected_seq(),
                      .file_id = file_id,
@@ -497,11 +497,11 @@ void run_chunk_transfer_demo(std::string_view label,
   std::cout << label << " final match=" << final_match << " final_size=" << final_text.size()
             << " expected_seq=" << sink.expected_seq() << "\n";
 
-  const auto frame = yisync::encode_frame(yisync::Message{
+  const auto frame = yisync::encode_frame(yisync::T_Message{
       make_chunk(stream_id, seq + 1, file_id + 1, 0, yisync::kDefaultChunkSizeBytes, source_bytes)});
   const auto decoded = yisync::decode_message(yisync::decode_frame(std::span<const std::byte>(frame.data(), frame.size())));
   std::cout << "encoded " << label << " frame bytes=" << frame.size()
-            << " decoded_is_chunk=" << std::holds_alternative<yisync::Chunk>(decoded) << "\n";
+            << " decoded_is_chunk=" << std::holds_alternative<yisync::T_Chunk>(decoded) << "\n";
 
   if (!final_match) {
     throw std::runtime_error("chunk demo final file content mismatch");
@@ -526,7 +526,7 @@ void run_chunk_no_persist_demo() {
   }
 
   const auto chunk_count = yisync::chunk_count_for_size(source_bytes.size());
-  const yisync::FileBegin begin{
+  const yisync::T_FileBegin begin{
       .stream_id = stream_id,
       .seq = seq,
       .file_id = file_id,
@@ -540,7 +540,7 @@ void run_chunk_no_persist_demo() {
   };
 
   {
-    yisync::ChunkedReceiverStream receiver(stream_id, sink_root);
+    yisync::T_ChunkedReceiverStream receiver(stream_id, sink_root);
     print_result("CHUNK-NO-PERSIST FILE_BEGIN", receiver.apply(begin));
     for (const auto chunk_index : std::vector<std::uint64_t>{2, 0}) {
       auto chunk = make_chunk(stream_id, seq, file_id, chunk_index, yisync::kDefaultChunkSizeBytes, source_bytes);
@@ -559,35 +559,35 @@ void run_chunk_no_persist_demo() {
   if (!manifest.entries.empty()) {
     throw std::runtime_error("chunk no-persist manifest exposed unfinished file");
   }
-  const auto manifest_frame = yisync::encode_frame(yisync::Message{yisync::Manifest1{.manifest_id = 1, .streams = {manifest}}});
+  const auto manifest_frame = yisync::encode_frame(yisync::T_Message{yisync::T_Manifest1{.manifest_id = 1, .streams = {manifest}}});
   const auto manifest_decoded = yisync::decode_message(
       yisync::decode_frame(std::span<const std::byte>(manifest_frame.data(), manifest_frame.size())));
   std::cout << "CHUNK-NO-PERSIST manifest entries=" << manifest.entries.size()
-            << " decoded_is_manifest=" << std::holds_alternative<yisync::Manifest1>(manifest_decoded) << "\n";
-  const yisync::Manifest2 manifest2{
+            << " decoded_is_manifest=" << std::holds_alternative<yisync::T_Manifest1>(manifest_decoded) << "\n";
+  const yisync::T_Manifest2 manifest2{
       .manifest_id = 1,
-      .streams = {yisync::Manifest2Stream{
+      .streams = {yisync::T_Manifest2Stream{
           .stream_id = stream_id,
-          .action = yisync::Manifest2Action::CreateMissing,
+          .action = yisync::EM_Manifest2Action::CREATE_MISSING,
           .start_file_id = file_id,
           .start_offset = 0,
       }},
   };
-  const auto manifest2_frame = yisync::encode_frame(yisync::Message{manifest2});
+  const auto manifest2_frame = yisync::encode_frame(yisync::T_Message{manifest2});
   const auto manifest2_decoded = yisync::decode_message(
       yisync::decode_frame(std::span<const std::byte>(manifest2_frame.data(), manifest2_frame.size())));
   std::cout << "CHUNK-NO-PERSIST manifest2 streams=" << manifest2.streams.size()
-            << " decoded_is_manifest2=" << std::holds_alternative<yisync::Manifest2>(manifest2_decoded) << "\n";
+            << " decoded_is_manifest2=" << std::holds_alternative<yisync::T_Manifest2>(manifest2_decoded) << "\n";
 
   {
-    yisync::ChunkedReceiverStream receiver(stream_id, sink_root);
+    yisync::T_ChunkedReceiverStream receiver(stream_id, sink_root);
     std::cout << "CHUNK-NO-PERSIST restarted expected_seq=" << receiver.expected_seq() << "\n";
     print_result("CHUNK-NO-PERSIST restart FILE_BEGIN", receiver.apply(begin));
     for (std::uint64_t chunk_index = 0; chunk_index < chunk_count; ++chunk_index) {
       auto chunk = make_chunk(stream_id, seq, file_id, chunk_index, yisync::kDefaultChunkSizeBytes, source_bytes);
       print_result("CHUNK-NO-PERSIST restart CHUNK " + std::to_string(chunk_index), receiver.apply(chunk));
     }
-    const yisync::FileCommit commit{
+    const yisync::T_FileCommit commit{
         .stream_id = stream_id,
         .seq = seq,
         .file_id = file_id,
@@ -633,9 +633,9 @@ int main() {
   write_text(source / "1.file", "hello");
   write_text(source / "2.file", "world-data");
 
-  yisync::ReceiverStream sink(7, sink_root);
+  yisync::T_ReceiverStream sink(7, sink_root);
 
-  yisync::Create create_1{
+  yisync::T_Create create_1{
       .stream_id = 7,
       .seq = 1,
       .file_id = 1,
@@ -647,22 +647,22 @@ int main() {
   print_result("CREATE 1.file", sink.apply(create_1));
 
   auto payload_1 = bytes_from_string("hello");
-  yisync::Data data_1{
+  yisync::T_Data data_1{
       .stream_id = 7,
       .seq = 1,
       .file_id = 1,
       .offset = 0,
       .final_size = payload_1.size(),
       .raw_len = static_cast<std::uint32_t>(payload_1.size()),
-      .compression = yisync::Compression::None,
-      .checksum_algo = yisync::ChecksumAlgo::Crc32c,
+      .compression = yisync::EM_Compression::NONE,
+      .checksum_algo = yisync::EM_ChecksumAlgo::CRC32C,
       .checksum = yisync::crc32c_bytes(payload_1),
       .payload = payload_1,
   };
   print_result("DATA 1.file", sink.apply(data_1));
 
   const auto prev_checksum = yisync::make_crc32c_range_checksum(source / "1.file", 4 * 1024 * 1024);
-  yisync::Create create_2{
+  yisync::T_Create create_2{
       .stream_id = 7,
       .seq = 2,
       .file_id = 2,
@@ -675,15 +675,15 @@ int main() {
   print_result("CREATE 2.file", sink.apply(create_2));
 
   auto payload_2 = bytes_from_string("world-data");
-  yisync::Data data_2{
+  yisync::T_Data data_2{
       .stream_id = 7,
       .seq = 2,
       .file_id = 2,
       .offset = 0,
       .final_size = payload_2.size(),
       .raw_len = static_cast<std::uint32_t>(payload_2.size()),
-      .compression = yisync::Compression::None,
-      .checksum_algo = yisync::ChecksumAlgo::Crc32c,
+      .compression = yisync::EM_Compression::NONE,
+      .checksum_algo = yisync::EM_ChecksumAlgo::CRC32C,
       .checksum = yisync::crc32c_bytes(payload_2),
       .payload = payload_2,
   };
@@ -698,15 +698,15 @@ int main() {
             << " sink entries=" << sink_manifest.entries.size() << "\n";
   std::cout << "diff result=" << (diff.has_value() ? "needs sync" : "in sync") << "\n";
 
-  const auto frame = yisync::encode_frame(yisync::Message{data_2});
+  const auto frame = yisync::encode_frame(yisync::T_Message{data_2});
   const auto decoded = yisync::decode_message(yisync::decode_frame(std::span<const std::byte>(frame.data(), frame.size())));
-  const auto heartbeat_frame = yisync::encode_frame(yisync::Message{sink.heartbeat(4 * 1024 * 1024)});
+  const auto heartbeat_frame = yisync::encode_frame(yisync::T_Message{sink.heartbeat(4 * 1024 * 1024)});
   const auto heartbeat_decoded =
       yisync::decode_message(yisync::decode_frame(std::span<const std::byte>(heartbeat_frame.data(), heartbeat_frame.size())));
   std::cout << "encoded DATA frame bytes=" << frame.size()
-            << " decoded_is_data=" << std::holds_alternative<yisync::Data>(decoded) << "\n";
+            << " decoded_is_data=" << std::holds_alternative<yisync::T_Data>(decoded) << "\n";
   std::cout << "encoded HEARTBEAT frame bytes=" << heartbeat_frame.size()
-            << " decoded_is_heartbeat=" << std::holds_alternative<yisync::Heartbeat>(heartbeat_decoded) << "\n";
+            << " decoded_is_heartbeat=" << std::holds_alternative<yisync::T_Heartbeat>(heartbeat_decoded) << "\n";
 
   run_reconnect_demo();
   run_scheduler_demo();

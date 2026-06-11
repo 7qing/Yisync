@@ -18,7 +18,7 @@
 namespace yisync {
 namespace {
 
-constexpr std::size_t kFrameHeaderLen = MessageHeader::kHeaderLen;
+constexpr std::size_t kFrameHeaderLen = T_MessageHeader::kHeaderLen;
 constexpr std::size_t kHeaderLenOffset = 6;
 constexpr std::size_t kBodyLenOffset = 8;
 
@@ -261,7 +261,7 @@ void AsyncFrameConnection::start(EventLoop& loop) {
   update_watch();
 }
 
-void AsyncFrameConnection::send(const Message& message) {
+void AsyncFrameConnection::send(const T_Message& message) {
   if (fd_ < 0) {
     throw std::runtime_error("connection is closed");
   }

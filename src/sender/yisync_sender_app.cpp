@@ -35,17 +35,17 @@ namespace yisync::node {
 
 class SenderApp {
  public:
-  explicit SenderApp(NodeOptions options)
+  explicit SenderApp(T_NodeOptions options)
       : options_(std::move(options)),
         network_(loop_,
                  make_line_endpoints(options_),
                  make_line_configs(options_),
                  kMaxFrameBytes,
-                 yisync::network::ReconnectPolicy{
+                 yisync::network::T_ReconnectPolicy{
                      .base_delay = std::chrono::milliseconds(options_.reconnect_base_delay_ms),
                      .max_delay = std::chrono::milliseconds(options_.reconnect_max_delay_ms),
                  },
-                 yisync::network::make_hello(yisync::Role::Sender,
+                 yisync::network::make_hello(yisync::EM_Role::SENDER,
                                              "sender",
                                              static_cast<std::uint32_t>(options_.chunk_size),
                                              options_.recv_window_bytes)) {
@@ -53,13 +53,13 @@ class SenderApp {
   }
 
   int run() {
-    network_.on_message([this](yisync::LineId id, yisync::Message message) {
+    network_.on_message([this](yisync::LineId id, yisync::T_Message message) {
       on_message(id, std::move(message));
     });
     network_.on_connected([this](yisync::LineId id) {
       on_connected(id);
     });
-    network_.on_lost_sends([this](const std::vector<yisync::LostSend>& lost_sends) {
+    network_.on_lost_sends([this](const std::vector<yisync::T_LostSend>& lost_sends) {
       on_lost_sends(lost_sends);
     });
     network_.start();
@@ -80,10 +80,10 @@ class SenderApp {
   }
 
  private:
-  struct SourceWatcherState {
+  struct T_SourceWatcherState {
     std::uint64_t stream_id = 0;
     std::filesystem::path root;
-    std::unique_ptr<yisync::ISourceWatcher> watcher;
+    std::unique_ptr<yisync::T_ISourceWatcher> watcher;
   };
 
   class RtoEstimator {
@@ -128,7 +128,7 @@ class SenderApp {
   void build_source_streams() {
     if (options_.source_root.empty()) {
       auto data = make_sender_bytes(options_.size);
-      auto reader = std::make_shared<yisync::SimulatedSourceReader>(data);
+      auto reader = std::make_shared<yisync::T_SimulatedSourceReader>(data);
       auto task = yisync::make_simulated_file_task(kStreamId,
                                                    kSeq,
                                                    kFileId,
@@ -136,11 +136,11 @@ class SenderApp {
                                                    reader,
                                                    options_.chunk_size,
                                                    {});
-      StreamSendState stream;
+      T_StreamSendState stream;
       stream.stream_id = task.stream_id;
       stream.source_manifest.stream_id = task.stream_id;
       stream.source_manifest.root = "<simulated>";
-      stream.source_manifest.entries.push_back(yisync::ManifestEntry{
+      stream.source_manifest.entries.push_back(yisync::T_ManifestEntry{
           .file_id = task.file_id,
           .seq = task.seq,
           .kind = task.kind,
@@ -156,15 +156,15 @@ class SenderApp {
       return;
     }
 
-    struct ConfiguredRoot {
+    struct T_ConfiguredRoot {
       std::uint64_t stream_id = 0;
       std::filesystem::path root;
       std::string entry_name_regex;
     };
 
-    std::vector<ConfiguredRoot> roots;
+    std::vector<T_ConfiguredRoot> roots;
     for (const auto& stream : options_.source_streams) {
-      roots.push_back(ConfiguredRoot{
+      roots.push_back(T_ConfiguredRoot{
           .stream_id = stream.stream_id,
           .root = stream.root,
           .entry_name_regex = stream.entry_name_regex,
@@ -191,7 +191,7 @@ class SenderApp {
         }
         const auto stream_id = parse_stream_dir_name(entry.path());
         if (stream_id.has_value()) {
-          roots.push_back(ConfiguredRoot{
+          roots.push_back(T_ConfiguredRoot{
               .stream_id = *stream_id,
               .root = entry.path(),
           });
@@ -203,7 +203,7 @@ class SenderApp {
       });
 
       if (roots.empty()) {
-        roots.push_back(ConfiguredRoot{
+        roots.push_back(T_ConfiguredRoot{
             .stream_id = kStreamId,
             .root = options_.source_root,
         });
@@ -216,7 +216,7 @@ class SenderApp {
       if (!std::filesystem::exists(root, ec)) {
         throw std::runtime_error("source stream root does not exist: " + root.string());
       }
-      auto directory = std::make_shared<yisync::SourceDirectory>(stream_id,
+      auto directory = std::make_shared<yisync::T_SourceDirectory>(stream_id,
                                                                  root,
                                                                  4 * 1024 * 1024,
                                                                  configured.entry_name_regex);
@@ -225,7 +225,7 @@ class SenderApp {
         continue;
       }
 
-      StreamSendState stream;
+      T_StreamSendState stream;
       stream.stream_id = stream_id;
       stream.root = root;
       stream.entry_name_regex = configured.entry_name_regex;
@@ -263,7 +263,7 @@ class SenderApp {
         continue;
       }
       try {
-        watchers_.push_back(SourceWatcherState{
+        watchers_.push_back(T_SourceWatcherState{
             .stream_id = stream.stream_id,
             .root = stream.root,
             .watcher = yisync::make_source_watcher(stream.root, options_.watch_backend),
@@ -350,22 +350,22 @@ class SenderApp {
     }
   }
 
-  StreamSendState* stream_for_id(std::uint64_t stream_id) {
+  T_StreamSendState* stream_for_id(std::uint64_t stream_id) {
     auto it = std::find_if(streams_.begin(), streams_.end(), [stream_id](const auto& stream) {
       return stream.stream_id == stream_id;
     });
     return it == streams_.end() ? nullptr : &*it;
   }
 
-  const StreamSendState* stream_for_id(std::uint64_t stream_id) const {
+  const T_StreamSendState* stream_for_id(std::uint64_t stream_id) const {
     auto it = std::find_if(streams_.begin(), streams_.end(), [stream_id](const auto& stream) {
       return stream.stream_id == stream_id;
     });
     return it == streams_.end() ? nullptr : &*it;
   }
 
-  yisync::network::NetworkSendResult send_buffered(yisync::Message message,
-                                                   yisync::SendRequest request) {
+  yisync::network::T_NetworkSendResult send_buffered(yisync::T_Message message,
+                                                   yisync::T_SendRequest request) {
     const auto result = network_.send(message, request);
     if (!result.sent) {
       return result;
@@ -375,7 +375,7 @@ class SenderApp {
     return result;
   }
 
-  void erase_completed_buffered(const yisync::Heartbeat& heartbeat) {
+  void erase_completed_buffered(const yisync::T_Heartbeat& heartbeat) {
     observe_ack_samples(send_buffer_.erase_completed(heartbeat, current_tick_));
   }
 
@@ -387,18 +387,18 @@ class SenderApp {
     }
   }
 
-  void erase_chunk_buffered(const yisync::ReceivedChunk& chunk,
+  void erase_chunk_buffered(const yisync::T_ReceivedChunk& chunk,
                             std::uint64_t stream_id) {
     if (auto sample = send_buffer_.erase_chunk(chunk, stream_id, current_tick_)) {
       observe_ack_sample(*sample);
     }
   }
 
-  bool enqueue_nack_retransmit(const yisync::Nack& nack) {
+  bool enqueue_nack_retransmit(const yisync::T_Nack& nack) {
     return send_buffer_.enqueue_nack_retransmit(nack, options_.chunk_size);
   }
 
-  void reset_task_for_manifest_recovery(FileSendTask& task) {
+  void reset_task_for_manifest_recovery(T_FileSendTask& task) {
     task.chunk_mode = task.preferred_chunk_mode;
     task.begin_sent = false;
     task.begin_ready = false;
@@ -441,13 +441,13 @@ class SenderApp {
     return true;
   }
 
-  void observe_ack_samples(const std::vector<yisync::AckedSendSample>& samples) {
+  void observe_ack_samples(const std::vector<yisync::T_AckedSendSample>& samples) {
     for (const auto& sample : samples) {
       observe_ack_sample(sample);
     }
   }
 
-  void observe_ack_sample(const yisync::AckedSendSample& sample) {
+  void observe_ack_sample(const yisync::T_AckedSendSample& sample) {
     if (sample.rtt_ticks == 0) {
       return;
     }
@@ -467,44 +467,44 @@ class SenderApp {
     loop_.stop();
   }
 
-  bool is_recoverable_nack(yisync::NackReason reason) const noexcept {
+  bool is_recoverable_nack(yisync::EM_NackReason reason) const noexcept {
     switch (reason) {
-      case yisync::NackReason::BadChecksum:
-      case yisync::NackReason::BadCommit:
-      case yisync::NackReason::SizeConflict:
-      case yisync::NackReason::ChecksumMismatch:
-      case yisync::NackReason::BadSeq:
-      case yisync::NackReason::BadOffset:
-      case yisync::NackReason::BadChunk:
+      case yisync::EM_NackReason::BAD_CHECKSUM:
+      case yisync::EM_NackReason::BAD_COMMIT:
+      case yisync::EM_NackReason::SIZE_CONFLICT:
+      case yisync::EM_NackReason::CHECKSUM_MISMATCH:
+      case yisync::EM_NackReason::BAD_SEQ:
+      case yisync::EM_NackReason::BAD_OFFSET:
+      case yisync::EM_NackReason::BAD_CHUNK:
         return true;
-      case yisync::NackReason::BadSession:
-      case yisync::NackReason::BadFileOrder:
-      case yisync::NackReason::BadCreate:
-      case yisync::NackReason::FileExists:
-      case yisync::NackReason::PrevFileIncomplete:
-      case yisync::NackReason::UnsupportedCompression:
-      case yisync::NackReason::DecodeError:
-      case yisync::NackReason::IoError:
+      case yisync::EM_NackReason::BAD_SESSION:
+      case yisync::EM_NackReason::BAD_FILE_ORDER:
+      case yisync::EM_NackReason::BAD_CREATE:
+      case yisync::EM_NackReason::FILE_EXISTS:
+      case yisync::EM_NackReason::PREV_FILE_INCOMPLETE:
+      case yisync::EM_NackReason::UNSUPPORTED_COMPRESSION:
+      case yisync::EM_NackReason::DECODE_ERROR:
+      case yisync::EM_NackReason::IO_ERROR:
         return false;
     }
     return false;
   }
 
-  const char* recovery_reason_name(yisync::NackReason reason) const noexcept {
+  const char* recovery_reason_name(yisync::EM_NackReason reason) const noexcept {
     switch (reason) {
-      case yisync::NackReason::BadChecksum:
+      case yisync::EM_NackReason::BAD_CHECKSUM:
         return "bad_checksum";
-      case yisync::NackReason::BadCommit:
+      case yisync::EM_NackReason::BAD_COMMIT:
         return "bad_commit";
-      case yisync::NackReason::SizeConflict:
+      case yisync::EM_NackReason::SIZE_CONFLICT:
         return "size_conflict";
-      case yisync::NackReason::ChecksumMismatch:
+      case yisync::EM_NackReason::CHECKSUM_MISMATCH:
         return "checksum_mismatch";
-      case yisync::NackReason::BadSeq:
+      case yisync::EM_NackReason::BAD_SEQ:
         return "bad_seq";
-      case yisync::NackReason::BadOffset:
+      case yisync::EM_NackReason::BAD_OFFSET:
         return "bad_offset";
-      case yisync::NackReason::BadChunk:
+      case yisync::EM_NackReason::BAD_CHUNK:
         return "bad_chunk";
       default:
         return "unrecoverable";
@@ -555,7 +555,7 @@ class SenderApp {
     return true;
   }
 
-  void mark_task_retransmitted(const yisync::SendRequest& request, yisync::LineId line_id) {
+  void mark_task_retransmitted(const yisync::T_SendRequest& request, yisync::LineId line_id) {
     auto* stream = stream_for_id(request.stream_id);
     if (stream == nullptr || stream->complete) {
       return;
@@ -565,12 +565,12 @@ class SenderApp {
       return;
     }
     switch (request.kind) {
-      case yisync::SendKind::Create:
+      case yisync::EM_SendKind::CREATE:
         if (!task->chunk_mode) {
           yisync::mark_append_create_retransmitted(task->append, line_id);
         }
         break;
-      case yisync::SendKind::Data:
+      case yisync::EM_SendKind::DATA:
         if (!task->chunk_mode) {
           yisync::mark_append_data_retransmitted(task->append,
                                                  line_id,
@@ -578,13 +578,13 @@ class SenderApp {
                                                  request.end_offset);
         }
         break;
-      case yisync::SendKind::FileBegin:
+      case yisync::EM_SendKind::FILE_BEGIN:
         if (task->chunk_mode) {
           task->begin_sent = true;
           task->begin_line_id = line_id;
         }
         break;
-      case yisync::SendKind::Chunk:
+      case yisync::EM_SendKind::CHUNK:
         if (task->chunk_mode) {
           (void)yisync::mark_chunk_sent(task->chunk_resend,
                                         request.chunk_index,
@@ -592,7 +592,7 @@ class SenderApp {
                                         current_tick_);
         }
         break;
-      case yisync::SendKind::FileCommit:
+      case yisync::EM_SendKind::FILE_COMMIT:
         if (task->chunk_mode) {
           task->commit_sent = true;
           task->commit_line_id = line_id;
@@ -641,11 +641,11 @@ class SenderApp {
     schedule_work();
   }
 
-  void send_file_begin(StreamSendState& stream, FileSendTask& task) {
+  void send_file_begin(T_StreamSendState& stream, T_FileSendTask& task) {
     if (!task.chunk_mode || task.begin_sent || !stream.manifest_applied) {
       return;
     }
-    const yisync::FileBegin begin{
+    const yisync::T_FileBegin begin{
         .stream_id = task.stream_id,
         .seq = task.seq,
         .file_id = task.file_id,
@@ -657,14 +657,14 @@ class SenderApp {
         .prev_file_id = 0,
         .prev_final_size = 0,
     };
-    auto message = yisync::Message{begin};
-    const yisync::SendRequest request{
+    auto message = yisync::T_Message{begin};
+    const yisync::T_SendRequest request{
         .stream_id = begin.stream_id,
         .file_id = begin.file_id,
         .seq = begin.seq,
         .bytes = encoded_message_size(message),
         .split_allowed = false,
-        .kind = yisync::SendKind::FileBegin,
+        .kind = yisync::EM_SendKind::FILE_BEGIN,
     };
     const auto result = send_buffered(std::move(message), request);
     if (!result.sent) {
@@ -679,23 +679,23 @@ class SenderApp {
               << " size=" << task.source_size << "\n";
   }
 
-  void on_message(yisync::LineId line_id, yisync::Message message) {
-    if (const auto* manifest = std::get_if<yisync::Manifest1>(&message)) {
-      std::cerr << "SENDER unexpected Manifest1 from receiver line=" << line_id
+  void on_message(yisync::LineId line_id, yisync::T_Message message) {
+    if (const auto* manifest = std::get_if<yisync::T_Manifest1>(&message)) {
+      std::cerr << "SENDER unexpected T_Manifest1 from receiver line=" << line_id
                 << " manifest_id=" << manifest->manifest_id << "\n";
       failed_ = true;
       loop_.stop();
       return;
     }
-    if (const auto* manifest2 = std::get_if<yisync::Manifest2>(&message)) {
+    if (const auto* manifest2 = std::get_if<yisync::T_Manifest2>(&message)) {
       on_manifest2(line_id, *manifest2);
       return;
     }
-    if (const auto* heartbeat = std::get_if<yisync::Heartbeat>(&message)) {
+    if (const auto* heartbeat = std::get_if<yisync::T_Heartbeat>(&message)) {
       on_heartbeat(line_id, *heartbeat);
       return;
     }
-    if (const auto* nack = std::get_if<yisync::Nack>(&message)) {
+    if (const auto* nack = std::get_if<yisync::T_Nack>(&message)) {
       std::cerr << "SENDER NACK line=" << line_id
                 << " reason=" << static_cast<int>(nack->reason)
                 << " detail=" << nack->detail << "\n";
@@ -733,24 +733,24 @@ class SenderApp {
     const auto manifest_id = manifest.manifest_id;
     const auto stream_count = manifest.streams.size();
     std::ostringstream label;
-    label << "message=Manifest1"
+    label << "message=T_Manifest1"
           << " manifest_id=" << manifest_id
           << " streams=" << stream_count
           << " entries=" << entry_count;
-    const auto result = network_.send_control(yisync::Message{manifest}, label.str());
+    const auto result = network_.send_control(yisync::T_Message{manifest}, label.str());
     if (!result.queued) {
       return;
     }
     if (!result.sent) {
-      std::cout << "SENDER Manifest1 queued"
+      std::cout << "SENDER T_Manifest1 queued"
                 << " manifest_id=" << manifest_id
                 << " streams=" << stream_count
                 << " entries=" << entry_count << "\n";
     }
   }
 
-  void on_manifest2(yisync::LineId line_id, const yisync::Manifest2& manifest2) {
-    std::cout << "SENDER Manifest2 line=" << line_id
+  void on_manifest2(yisync::LineId line_id, const yisync::T_Manifest2& manifest2) {
+    std::cout << "SENDER T_Manifest2 line=" << line_id
               << " manifest_id=" << manifest2.manifest_id
               << " streams=" << manifest2.streams.size() << "\n";
     for (auto& stream : streams_) {
@@ -763,13 +763,13 @@ class SenderApp {
   }
 
   void apply_manifest2_stream(yisync::LineId line_id,
-                              const yisync::Manifest2& manifest2,
-                              StreamSendState& stream) {
-    std::optional<yisync::Manifest2ApplyResult> result;
+                              const yisync::T_Manifest2& manifest2,
+                              T_StreamSendState& stream) {
+    std::optional<yisync::T_Manifest2ApplyResult> result;
     try {
       result = yisync::apply_manifest2_to_stream(manifest2, stream);
     } catch (const std::exception& ex) {
-      std::cerr << "SENDER Manifest2 apply failed line=" << line_id
+      std::cerr << "SENDER T_Manifest2 apply failed line=" << line_id
                 << " stream=" << stream.stream_id
                 << " error=" << ex.what() << "\n";
       failed_ = true;
@@ -780,7 +780,7 @@ class SenderApp {
       return;
     }
     if (result->in_sync) {
-      std::cout << "SENDER Manifest2 stream already in sync line=" << line_id
+      std::cout << "SENDER T_Manifest2 stream already in sync line=" << line_id
                 << " stream=" << stream.stream_id << "\n";
       check_all_done();
       return;
@@ -793,7 +793,7 @@ class SenderApp {
       return;
     }
 
-    std::cout << "SENDER Manifest2 action line=" << line_id
+    std::cout << "SENDER T_Manifest2 action line=" << line_id
               << " stream=" << stream.stream_id
               << " start_file_id=" << result->start.start_file_id
               << " start_offset=" << result->start.start_offset
@@ -808,9 +808,9 @@ class SenderApp {
   }
 
   void apply_append_plan(yisync::LineId line_id,
-                         StreamSendState& stream,
-                         FileSendTask& task,
-                         const yisync::SyncStart& diff) {
+                         T_StreamSendState& stream,
+                         T_FileSendTask& task,
+                         const yisync::T_SyncStart& diff) {
     if (yisync::append_inflight(task.append) || done_) {
       return;
     }
@@ -829,13 +829,13 @@ class SenderApp {
     send_append_if_possible(stream, task);
   }
 
-  void send_append_if_possible(StreamSendState& stream, FileSendTask& task) {
+  void send_append_if_possible(T_StreamSendState& stream, T_FileSendTask& task) {
     if (task.chunk_mode || !stream.manifest_applied || done_ || failed_) {
       return;
     }
 
     if (task.append.needs_create && !task.append.create_sent) {
-      const yisync::Create create{
+      const yisync::T_Create create{
           .stream_id = task.stream_id,
           .seq = task.append.seq,
           .file_id = task.file_id,
@@ -846,8 +846,8 @@ class SenderApp {
           .prev_file_id = 0,
           .prev_final_size = 0,
       };
-      const auto sent = try_send_buffered_kind(yisync::Message{create},
-                                               yisync::SendKind::Create,
+      const auto sent = try_send_buffered_kind(yisync::T_Message{create},
+                                               yisync::EM_SendKind::CREATE,
                                                create.seq,
                                                0,
                                                0,
@@ -884,8 +884,8 @@ class SenderApp {
                                          task.append.next_offset,
                                          task.source_size,
                                          std::move(payload));
-      const auto sent = try_send_buffered_kind(yisync::Message{data},
-                                               yisync::SendKind::Data,
+      const auto sent = try_send_buffered_kind(yisync::T_Message{data},
+                                               yisync::EM_SendKind::DATA,
                                                task.append.seq,
                                                data.offset,
                                                data.offset + data.raw_len,
@@ -907,7 +907,7 @@ class SenderApp {
 
   }
 
-  void advance_stream_task(StreamSendState& stream) {
+  void advance_stream_task(T_StreamSendState& stream) {
     manifest_recovery_attempts_ = 0;
     if (stream.current_task < stream.tasks.size()) {
       stream.current_task += 1;
@@ -935,11 +935,11 @@ class SenderApp {
       return;
     }
 
-    const yisync::SyncStart create_missing{
+    const yisync::T_SyncStart create_missing{
         .stream_id = stream.stream_id,
         .start_file_id = next->file_id,
         .start_offset = 0,
-        .start_action = yisync::StartAction::CreateMissing,
+        .start_action = yisync::EM_StartAction::CREATE_MISSING,
     };
     apply_append_plan(0, stream, *next, create_missing);
   }
@@ -999,8 +999,8 @@ class SenderApp {
               << "\n";
   }
 
-  bool try_send_buffered_kind(yisync::Message message,
-                              yisync::SendKind kind,
+  bool try_send_buffered_kind(yisync::T_Message message,
+                              yisync::EM_SendKind kind,
                               std::uint64_t seq,
                               std::uint64_t offset,
                               std::uint64_t end_offset,
@@ -1008,7 +1008,7 @@ class SenderApp {
                               std::uint64_t file_id,
                               yisync::LineId& line_id_out) {
     const auto wire_bytes = encoded_message_size(message);
-    const yisync::SendRequest request{
+    const yisync::T_SendRequest request{
         .stream_id = stream_id,
         .file_id = file_id,
         .seq = seq,
@@ -1026,12 +1026,12 @@ class SenderApp {
     return true;
   }
 
-  void reset_append_plan_for_reconnect(StreamSendState& stream, FileSendTask& task) {
+  void reset_append_plan_for_reconnect(T_StreamSendState& stream, T_FileSendTask& task) {
     yisync::reset_append_inflight(task.append);
     stream.manifest_applied = false;
   }
 
-  void on_lost_sends(const std::vector<yisync::LostSend>& lost_sends) {
+  void on_lost_sends(const std::vector<yisync::T_LostSend>& lost_sends) {
     bool changed = false;
     for (const auto& lost : lost_sends) {
       auto* stream = stream_for_id(lost.stream_id);
@@ -1043,7 +1043,7 @@ class SenderApp {
         continue;
       }
 
-      const auto lost_key = yisync::SenderSendBuffer::key_for_lost_send(lost);
+      const auto lost_key = yisync::T_SenderSendBuffer::key_for_lost_send(lost);
       if (send_buffer_.enqueue_retransmit(lost_key)) {
         changed = true;
         std::cerr << "SENDER line_lost retransmit queued line=" << lost.line_id
@@ -1071,7 +1071,7 @@ class SenderApp {
       if (lost.seq != task->seq) {
         continue;
       }
-      if (lost.kind == yisync::SendKind::FileBegin && task->begin_sent && !task->begin_ready) {
+      if (lost.kind == yisync::EM_SendKind::FILE_BEGIN && task->begin_sent && !task->begin_ready) {
         task->begin_sent = false;
         task->begin_line_id = 0;
         changed = true;
@@ -1080,7 +1080,7 @@ class SenderApp {
                   << " file_id=" << lost.file_id << "\n";
         continue;
       }
-      if (lost.kind == yisync::SendKind::Chunk) {
+      if (lost.kind == yisync::EM_SendKind::CHUNK) {
         if (yisync::mark_chunk_lost(task->chunk_resend, lost.chunk_index)) {
           changed = true;
           std::cerr << "SENDER line_lost CHUNK priority line=" << lost.line_id
@@ -1090,7 +1090,7 @@ class SenderApp {
         }
         continue;
       }
-      if (lost.kind == yisync::SendKind::FileCommit && task->commit_sent) {
+      if (lost.kind == yisync::EM_SendKind::FILE_COMMIT && task->commit_sent) {
         task->commit_sent = false;
         task->commit_line_id = 0;
         changed = true;
@@ -1105,7 +1105,7 @@ class SenderApp {
     }
   }
 
-  void on_heartbeat(yisync::LineId line_id, const yisync::Heartbeat& heartbeat) {
+  void on_heartbeat(yisync::LineId line_id, const yisync::T_Heartbeat& heartbeat) {
     network_.on_heartbeat(line_id, heartbeat);
     erase_completed_buffered(heartbeat);
     auto* stream = stream_for_id(heartbeat.stream_id);
@@ -1223,7 +1223,7 @@ class SenderApp {
     check_all_done();
   }
 
-  void schedule_chunk_work(StreamSendState& stream, FileSendTask& task) {
+  void schedule_chunk_work(T_StreamSendState& stream, T_FileSendTask& task) {
     if (!task.begin_ready || failed_ || done_) {
       send_file_begin(stream, task);
       return;
@@ -1255,17 +1255,17 @@ class SenderApp {
                                            chunk_index,
                                            yisync::read_chunk_payload(task, chunk_index, options_.chunk_size),
                                            options_.chunk_size);
-      const auto wire_bytes = encoded_message_size(yisync::Message{chunk});
-      const yisync::SendRequest request{
+      const auto wire_bytes = encoded_message_size(yisync::T_Message{chunk});
+      const yisync::T_SendRequest request{
           .stream_id = chunk.stream_id,
           .file_id = chunk.file_id,
           .seq = chunk.seq,
           .bytes = wire_bytes,
           .split_allowed = false,
-          .kind = yisync::SendKind::Chunk,
+          .kind = yisync::EM_SendKind::CHUNK,
           .chunk_index = chunk.chunk_index,
       };
-      const auto result = send_buffered(yisync::Message{chunk}, request);
+      const auto result = send_buffered(yisync::T_Message{chunk}, request);
       if (!result.sent) {
         return;
       }
@@ -1288,24 +1288,24 @@ class SenderApp {
     }
   }
 
-  void send_commit_if_possible(FileSendTask& task) {
+  void send_commit_if_possible(T_FileSendTask& task) {
     if (task.commit_sent) {
       return;
     }
-    const yisync::FileCommit commit{
+    const yisync::T_FileCommit commit{
         .stream_id = task.stream_id,
         .seq = task.seq,
         .file_id = task.file_id,
     };
-    const auto message = yisync::Message{commit};
+    const auto message = yisync::T_Message{commit};
     const auto wire_bytes = encoded_message_size(message);
-    const yisync::SendRequest request{
+    const yisync::T_SendRequest request{
         .stream_id = commit.stream_id,
         .file_id = commit.file_id,
         .seq = commit.seq,
         .bytes = wire_bytes,
         .split_allowed = false,
-        .kind = yisync::SendKind::FileCommit,
+        .kind = yisync::EM_SendKind::FILE_COMMIT,
     };
     const auto result = send_buffered(message, request);
     if (!result.sent) {
@@ -1343,12 +1343,12 @@ class SenderApp {
     loop_.call_later(std::chrono::milliseconds(10), [this] { tick(); });
   }
 
-  NodeOptions options_;
+  T_NodeOptions options_;
   yisync::EventLoop loop_;
-  std::vector<StreamSendState> streams_;
-  std::vector<SourceWatcherState> watchers_;
-  yisync::network::SenderNetwork network_;
-  yisync::SenderSendBuffer send_buffer_;
+  std::vector<T_StreamSendState> streams_;
+  std::vector<T_SourceWatcherState> watchers_;
+  yisync::network::T_SenderNetwork network_;
+  yisync::T_SenderSendBuffer send_buffer_;
   RtoEstimator rto_;
   std::uint64_t next_manifest_id_ = 1;
   std::uint64_t current_tick_ = 0;
@@ -1360,7 +1360,7 @@ class SenderApp {
   bool failed_ = false;
 };
 
-int run_sender(NodeOptions options) {
+int run_sender(T_NodeOptions options) {
   return SenderApp(std::move(options)).run();
 }
 

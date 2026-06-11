@@ -9,7 +9,7 @@
 
 namespace yisync {
 
-struct ChunkResendState {
+struct T_ChunkResendState {
   std::uint64_t chunk_count = 0;
   std::vector<std::uint64_t> order;
   std::vector<bool> acked;
@@ -20,36 +20,36 @@ struct ChunkResendState {
   std::vector<bool> priority;
 };
 
-struct ChunkSendMark {
+struct T_ChunkSendMark {
   bool marked = false;
   bool retransmit = false;
   std::uint64_t attempt = 0;
 };
 
-struct MissingHintApplied {
+struct T_MissingHintApplied {
   std::uint64_t first_chunk_index = 0;
   std::uint64_t last_chunk_index = 0;
 };
 
-void initialize_chunk_resend_state(ChunkResendState& state,
+void initialize_chunk_resend_state(T_ChunkResendState& state,
                                    std::uint64_t chunk_count,
                                    const std::vector<std::uint64_t>& requested_order);
-void reset_chunk_resend_state(ChunkResendState& state);
-bool all_chunks_acked(const ChunkResendState& state);
-bool chunk_index_valid(const ChunkResendState& state, std::uint64_t chunk_index) noexcept;
-std::uint64_t chunk_attempts(const ChunkResendState& state, std::uint64_t chunk_index) noexcept;
-std::optional<std::uint64_t> next_chunk_to_send(const ChunkResendState& state,
+void reset_chunk_resend_state(T_ChunkResendState& state);
+bool all_chunks_acked(const T_ChunkResendState& state);
+bool chunk_index_valid(const T_ChunkResendState& state, std::uint64_t chunk_index) noexcept;
+std::uint64_t chunk_attempts(const T_ChunkResendState& state, std::uint64_t chunk_index) noexcept;
+std::optional<std::uint64_t> next_chunk_to_send(const T_ChunkResendState& state,
                                                 std::uint64_t current_tick,
                                                 std::uint64_t retransmit_ticks);
-ChunkSendMark mark_chunk_sent(ChunkResendState& state,
+T_ChunkSendMark mark_chunk_sent(T_ChunkResendState& state,
                               std::uint64_t chunk_index,
                               LineId line_id,
                               std::uint64_t current_tick);
-bool acknowledge_chunk(ChunkResendState& state, std::uint64_t chunk_index);
-bool mark_chunk_lost(ChunkResendState& state, std::uint64_t chunk_index);
-std::vector<MissingHintApplied> apply_missing_hints(ChunkResendState& state,
+bool acknowledge_chunk(T_ChunkResendState& state, std::uint64_t chunk_index);
+bool mark_chunk_lost(T_ChunkResendState& state, std::uint64_t chunk_index);
+std::vector<T_MissingHintApplied> apply_missing_hints(T_ChunkResendState& state,
                                                     std::uint64_t seq,
                                                     std::uint64_t file_id,
-                                                    const std::vector<MissingChunkRange>& ranges);
+                                                    const std::vector<T_MissingChunkRange>& ranges);
 
 }  // namespace yisync

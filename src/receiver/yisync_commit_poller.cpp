@@ -4,12 +4,12 @@
 
 namespace yisync {
 
-CommitCompletionPoller::CommitCompletionPoller(EventLoop& loop,
+T_CommitCompletionPoller::T_CommitCompletionPoller(EventLoop& loop,
                                                std::chrono::milliseconds interval)
     : loop_(loop),
       interval_(interval) {}
 
-void CommitCompletionPoller::schedule(std::function<void()> callback) {
+void T_CommitCompletionPoller::schedule(std::function<void()> callback) {
   if (scheduled_) {
     return;
   }
@@ -20,7 +20,7 @@ void CommitCompletionPoller::schedule(std::function<void()> callback) {
   });
 }
 
-void CommitCompletionPoller::mark_idle() noexcept {
+void T_CommitCompletionPoller::mark_idle() noexcept {
   scheduled_ = false;
 }
 

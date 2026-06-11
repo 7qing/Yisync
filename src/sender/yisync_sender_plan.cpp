@@ -8,9 +8,9 @@ namespace yisync {
 
 namespace {
 
-FileChecksum full_crc32c_checksum_for_bytes(const Bytes& bytes) {
-  return FileChecksum{
-      .algo = ChecksumAlgo::Crc32c,
+T_FileChecksum full_crc32c_checksum_for_bytes(const Bytes& bytes) {
+  return T_FileChecksum{
+      .algo = EM_ChecksumAlgo::CRC32C,
       .offset = 0,
       .len = static_cast<std::uint64_t>(bytes.size()),
       .value = crc32c_bytes(bytes),
@@ -19,7 +19,7 @@ FileChecksum full_crc32c_checksum_for_bytes(const Bytes& bytes) {
 
 }  // namespace
 
-void initialize_file_task(FileSendTask& task,
+void initialize_file_task(T_FileSendTask& task,
                           bool chunk_mode,
                           std::uint64_t chunk_size,
                           const std::vector<std::uint64_t>& chunk_order) {
@@ -29,46 +29,46 @@ void initialize_file_task(FileSendTask& task,
   initialize_chunk_resend_state(task.chunk_resend, task.chunk_count, chunk_order);
 }
 
-FileSendTask make_real_file_task(std::uint64_t stream_id,
-                                 const SourceFile& file,
-                                 SourceDirectory& directory,
-                                 std::shared_ptr<const ISourceReader> reader,
+T_FileSendTask make_real_file_task(std::uint64_t stream_id,
+                                 const T_SourceFile& file,
+                                 T_SourceDirectory& directory,
+                                 std::shared_ptr<const T_ISourceReader> reader,
                                  std::uint64_t chunk_size,
                                  const std::vector<std::uint64_t>& chunk_order) {
-  FileSendTask task;
+  T_FileSendTask task;
   task.stream_id = stream_id;
   task.seq = file.manifest.seq == 0 ? file.file_id : file.manifest.seq;
   task.file_id = file.file_id;
   task.kind = file.manifest.kind;
   task.name = file.manifest.name;
   task.link_target = file.manifest.link_target;
-  task.source_size = file.manifest.kind == EntryKind::RegularFile ? file.manifest.size : 0;
-  task.source_checksum = file.manifest.kind == EntryKind::RegularFile
+  task.source_size = file.manifest.kind == EM_EntryKind::REGULAR_FILE ? file.manifest.size : 0;
+  task.source_checksum = file.manifest.kind == EM_EntryKind::REGULAR_FILE
                              ? directory.full_checksum(file)
-                             : FileChecksum{};
+                             : T_FileChecksum{};
   task.range_checksum = file.manifest.checksum;
   task.reader = std::move(reader);
   initialize_file_task(task,
-                       file.manifest.kind == EntryKind::RegularFile &&
+                       file.manifest.kind == EM_EntryKind::REGULAR_FILE &&
                            should_use_chunk_mode(task.source_size),
                        chunk_size,
                        chunk_order);
   return task;
 }
 
-FileSendTask make_simulated_file_task(std::uint64_t stream_id,
+T_FileSendTask make_simulated_file_task(std::uint64_t stream_id,
                                       std::uint64_t seq,
                                       std::uint64_t file_id,
                                       Bytes data,
-                                      std::shared_ptr<const ISourceReader> reader,
+                                      std::shared_ptr<const T_ISourceReader> reader,
                                       std::uint64_t chunk_size,
                                       const std::vector<std::uint64_t>& chunk_order) {
   const auto checksum = full_crc32c_checksum_for_bytes(data);
-  FileSendTask task;
+  T_FileSendTask task;
   task.stream_id = stream_id;
   task.seq = seq;
   task.file_id = file_id;
-  task.kind = EntryKind::RegularFile;
+  task.kind = EM_EntryKind::REGULAR_FILE;
   task.name = file_name_for_id(file_id);
   task.source_size = static_cast<std::uint64_t>(data.size());
   task.source_checksum = checksum;
@@ -78,9 +78,9 @@ FileSendTask make_simulated_file_task(std::uint64_t stream_id,
   return task;
 }
 
-Manifest1 manifest1_from_streams(std::uint64_t manifest_id,
-                                 const std::vector<StreamSendState>& streams) {
-  Manifest1 manifest;
+T_Manifest1 manifest1_from_streams(std::uint64_t manifest_id,
+                                 const std::vector<T_StreamSendState>& streams) {
+  T_Manifest1 manifest;
   manifest.manifest_id = manifest_id;
   manifest.streams.reserve(streams.size());
   for (const auto& stream : streams) {
@@ -89,8 +89,8 @@ Manifest1 manifest1_from_streams(std::uint64_t manifest_id,
   return manifest;
 }
 
-std::optional<Manifest2ApplyResult> apply_manifest2_to_stream(const Manifest2& manifest2,
-                                                              StreamSendState& stream) {
+std::optional<T_Manifest2ApplyResult> apply_manifest2_to_stream(const T_Manifest2& manifest2,
+                                                              T_StreamSendState& stream) {
   if (stream.manifest_applied || stream.complete) {
     return std::nullopt;
   }
@@ -101,21 +101,21 @@ std::optional<Manifest2ApplyResult> apply_manifest2_to_stream(const Manifest2& m
                                       return candidate.stream_id == stream.stream_id;
                                     });
   if (plan_it == manifest2.streams.end()) {
-    throw std::runtime_error("Manifest2 missing stream=" + std::to_string(stream.stream_id));
+    throw std::runtime_error("T_Manifest2 missing stream=" + std::to_string(stream.stream_id));
   }
-  if (plan_it->action == Manifest2Action::InSync) {
+  if (plan_it->action == EM_Manifest2Action::IN_SYNC) {
     stream.current_task = stream.tasks.size();
     stream.manifest_applied = true;
     stream.complete = true;
     stream.has_pending_changes = false;
-    return Manifest2ApplyResult{.in_sync = true};
+    return T_Manifest2ApplyResult{.in_sync = true};
   }
 
   auto it = std::find_if(stream.tasks.begin(), stream.tasks.end(), [&](const auto& task) {
     return task.file_id == plan_it->start_file_id;
   });
   if (it == stream.tasks.end()) {
-    throw std::runtime_error("Manifest2 start file not found stream=" +
+    throw std::runtime_error("T_Manifest2 start file not found stream=" +
                              std::to_string(stream.stream_id) +
                              " file_id=" + std::to_string(plan_it->start_file_id));
   }
@@ -125,60 +125,60 @@ std::optional<Manifest2ApplyResult> apply_manifest2_to_stream(const Manifest2& m
   auto* task = active_task(stream);
   if (task == nullptr) {
     stream.complete = true;
-    return Manifest2ApplyResult{.in_sync = true};
+    return T_Manifest2ApplyResult{.in_sync = true};
   }
 
-  SyncStart start{
+  T_SyncStart start{
       .stream_id = stream.stream_id,
       .start_file_id = plan_it->start_file_id,
       .start_offset = plan_it->start_offset,
-      .start_action = plan_it->action == Manifest2Action::ResumeExisting
-                          ? StartAction::ResumeExisting
-                          : StartAction::CreateMissing,
+      .start_action = plan_it->action == EM_Manifest2Action::RESUME_EXISTING
+                          ? EM_StartAction::RESUME_EXISTING
+                          : EM_StartAction::CREATE_MISSING,
   };
-  if (start.start_action == StartAction::ResumeExisting) {
+  if (start.start_action == EM_StartAction::RESUME_EXISTING) {
     task->chunk_mode = false;
   }
-  return Manifest2ApplyResult{
+  return T_Manifest2ApplyResult{
       .in_sync = false,
-      .should_start_append = start.start_action == StartAction::ResumeExisting || !task->chunk_mode,
-      .should_start_chunk = start.start_action != StartAction::ResumeExisting && task->chunk_mode,
+      .should_start_append = start.start_action == EM_StartAction::RESUME_EXISTING || !task->chunk_mode,
+      .should_start_chunk = start.start_action != EM_StartAction::RESUME_EXISTING && task->chunk_mode,
       .start = start,
   };
 }
 
-FileSendTask* active_task(StreamSendState& stream) noexcept {
+T_FileSendTask* active_task(T_StreamSendState& stream) noexcept {
   if (stream.current_task >= stream.tasks.size()) {
     return nullptr;
   }
   return &stream.tasks[stream.current_task];
 }
 
-const FileSendTask* active_task(const StreamSendState& stream) noexcept {
+const T_FileSendTask* active_task(const T_StreamSendState& stream) noexcept {
   if (stream.current_task >= stream.tasks.size()) {
     return nullptr;
   }
   return &stream.tasks[stream.current_task];
 }
 
-bool all_chunks_acked(const FileSendTask& task) {
+bool all_chunks_acked(const T_FileSendTask& task) {
   return all_chunks_acked(task.chunk_resend);
 }
 
-std::optional<std::uint64_t> next_unsent_chunk_index(const FileSendTask& task,
+std::optional<std::uint64_t> next_unsent_chunk_index(const T_FileSendTask& task,
                                                      std::uint64_t current_tick,
                                                      std::uint64_t retransmit_ticks) {
   return next_chunk_to_send(task.chunk_resend, current_tick, retransmit_ticks);
 }
 
-Bytes read_task_range(const FileSendTask& task, std::uint64_t offset, std::uint64_t len) {
+Bytes read_task_range(const T_FileSendTask& task, std::uint64_t offset, std::uint64_t len) {
   if (!task.reader) {
     throw std::runtime_error("send task has no source reader");
   }
   return task.reader->read_range(task.file_id, offset, len);
 }
 
-Bytes read_chunk_payload(const FileSendTask& task,
+Bytes read_chunk_payload(const T_FileSendTask& task,
                          std::uint64_t chunk_index,
                          std::uint64_t chunk_size) {
   const auto offset = chunk_index * chunk_size;
